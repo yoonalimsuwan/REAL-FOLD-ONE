@@ -179,4 +179,6 @@ Project link:
 
 https://github.com/yoonalimsuwan/REAL-FOLD-ONE
 
+MADE IN THAILAND.
+
 ```
