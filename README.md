@@ -161,6 +161,8 @@ If you use REAL FOLD ONE in your research, please cite:
 
 Limsuwan, Y. (2026). REAL FOLD ONE: SOC‑Controlled Universal Refinement Engine. 
 
+https://doi.org/10.5281/zenodo.20194882
+
 https://github.com/yoonalimsuwan/REAL-FOLD-ONE
 
 ---
@@ -174,6 +176,8 @@ MIT License. See LICENSE file for details.
 Contact
 
 Yoon A Limsuwan – [msps4u@gmail.com]
+
+https://orcid.org/0009-0008-2374-0788
 
 Project link: 
 
