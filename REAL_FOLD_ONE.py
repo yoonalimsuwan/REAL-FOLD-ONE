@@ -1658,6 +1658,100 @@ class RefinementEngine:
             if return_trajectory:
                 trajectory.append(best_coords.cpu().clone())
 
+    
+def compute_energy(self, coords: torch.Tensor, sequence: str,
+                   chain_types: Optional[List[str]] = None,
+                   mask: Optional[torch.Tensor] = None,
+                   chi: Optional[torch.Tensor] = None,
+                   alpha: Optional[torch.Tensor] = None) -> float:
+    """
+    Compute total energy of a given structure without any optimization.
+    Returns scalar energy (float).
+    """
+    if coords.dim() == 2:
+        coords = coords.unsqueeze(0)
+    B, L, _ = coords.shape
+    if B != 1:
+        raise ValueError("Only single chain/multimer supported as one concatenated chain")
+    coords = coords.squeeze(0)
+    L = len(sequence)
+    if mask is None:
+        mask = torch.ones(L, dtype=torch.bool, device=coords.device)
+    if chain_types is None:
+        chain_types = [detect_sequence_type(sequence[i:i+1]) for i in range(L)]
+    if chi is None:
+        chi = torch.zeros(L, 4, device=coords.device)   # max_chi=4
+    if alpha is None:
+        alpha = torch.ones(L, device=coords.device)
+
+    edge_idx, edge_dist = sparse_edges(coords, self.cfg.cutoff, self.cfg.max_neighbors)
+    atoms = reconstruct_backbone(coords)
+    edge_hb, edge_hb_dist = cross_sparse_edges(atoms['O'], atoms['N'], 3.5, self.cfg.max_neighbors)
+
+    E = self._total_energy(coords, sequence, alpha, chi,
+                           edge_idx, edge_dist, edge_hb, edge_hb_dist,
+                           [], chain_types, mask)
+    return E.item()
+
+def relax_local(self, coords: torch.Tensor, sequence: str,
+                positions: List[int], steps: int = 30, window: int = 3,
+                chain_types: Optional[List[str]] = None,
+                mask: Optional[torch.Tensor] = None,
+                chi: Optional[torch.Tensor] = None,
+                alpha: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, float]:
+    """
+    Local relaxation around given positions (indices in the concatenated sequence).
+    Returns (refined_coords, final_energy).
+    """
+    if coords.dim() == 2:
+        coords = coords.unsqueeze(0)
+    B, L, _ = coords.shape
+    if B != 1:
+        raise ValueError("Only single chain supported")
+    coords = coords.squeeze(0).detach().requires_grad_(True)
+    L = len(sequence)
+
+    if mask is None:
+        mask = torch.ones(L, dtype=torch.bool, device=coords.device)
+    if chain_types is None:
+        chain_types = [detect_sequence_type(sequence[i:i+1]) for i in range(L)]
+    if chi is None:
+        chi = torch.zeros(L, 4, device=coords.device)
+    if alpha is None:
+        alpha = torch.ones(L, device=coords.device)
+
+    # Determine window
+    min_pos = min(positions)
+    max_pos = max(positions)
+    win_start = max(0, min_pos - window)
+    win_end = min(L, max_pos + window + 1)
+
+    opt = torch.optim.Adam([coords], lr=self.cfg.lr)
+    best_E = float('inf')
+    best_coords = coords.clone()
+
+    edge_idx, edge_dist = sparse_edges(coords, self.cfg.cutoff, self.cfg.max_neighbors)
+    atoms = reconstruct_backbone(coords)
+    edge_hb, edge_hb_dist = cross_sparse_edges(atoms['O'], atoms['N'], 3.5, self.cfg.max_neighbors)
+
+    for _ in range(steps):
+        opt.zero_grad()
+        E = self._total_energy(coords, sequence, alpha, chi,
+                               edge_idx, edge_dist, edge_hb, edge_hb_dist,
+                               [], chain_types, mask)
+        E.backward()
+        # Mask gradient outside window
+        if coords.grad is not None:
+            grad_mask = torch.zeros(L, 3, device=coords.device)
+            grad_mask[win_start:win_end] = 1.0
+            coords.grad *= grad_mask
+        opt.step()
+        # Rebuild edges if coordinates changed significantly? (optional)
+        if E.item() < best_E:
+            best_E = E.item()
+            best_coords = coords.clone().detach()
+    return best_coords.detach(), best_E
+                    
         return {
             'coords': best_coords.cpu().numpy(),
             'chi': best_chi.cpu().numpy(),
