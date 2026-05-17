@@ -165,6 +165,8 @@ https://doi.org/10.5281/zenodo.20194882
 
 https://github.com/yoonalimsuwan/REAL-FOLD-ONE
 
+https://doi.org/10.5281/zenodo.20257600
+
 ---
 
 License
@@ -182,6 +184,8 @@ https://orcid.org/0009-0008-2374-0788
 Project link: 
 
 https://github.com/yoonalimsuwan/REAL-FOLD-ONE
+
+https://doi.org/10.5281/zenodo.20257600
 
 MADE IN THAILAND.
 
