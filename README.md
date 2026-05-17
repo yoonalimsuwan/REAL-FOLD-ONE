@@ -1,44 +1,68 @@
-REAL FOLD ONE – SOC‑Controlled Universal Refinement Engine
+`
+# REAL FOLD ONE – SOC‑Controlled Universal Refinement Engine
 
-REAL FOLD ONE is a training‑free, all‑atom refinement engine for protein and nucleic acid structures, driven by SOC (Self‑Organized Criticality) control. It refines initial structures from any predictor (AlphaFold, ESMFold, OpenFold, etc.) using physics‑based energy functions, adaptive temperature, and avalanche gradients. Scales to N > 100,000 residues with sparse graphs and chunked operations.
+**REAL FOLD ONE** is a training‑free, all‑atom refinement engine for protein and nucleic acid structures, driven by **SOC (Self‑Organized Criticality)** control. It refines initial structures from any source (experimental maps, predictors, de novo design, homology models) using physics‑based energy functions, adaptive temperature, and avalanche gradients. **Scales to N > 100,000 residues** with sparse graphs and chunked operations.
 
-✨ Key Features
+## Why Refinement?
 
-· SOC Controller – Learnable CSOC kernel: K_α(r) = (r+ε)^(−α) · exp(−r/λ), avalanche gradient, adaptive temperature.
-· Semantic‑State Contraction (SSC v6) – Deterministic fixed‑point operator (ε_FP = 0.0028, σ → 1).
-· DiffRGRefiner – Renormalization group coarse‑graining for large systems.
-· Full‑atom protein – Sidechains, LJ, Coulomb, torsion (χ), Ramachandran, H‑bond, solvation, clash.
-· Full‑atom DNA/RNA – Nucleotide topology, base pairing, stacking, backbone, LJ, Coulomb.
-· Full‑atom ligand – SDF/MOL2/PDB support, protein‑ligand interaction (LJ + Coulomb).
-· Multimer & chain boundaries – Cross‑chain interactions via sparse graphs.
-· Antibody design – CDR H3 loop remodeling, Rosetta scoring, affinity prediction (GNN).
-· DNA origami – Scaffold routing, staple design, oxDNA export, BV topological validation.
-· Itô calculus & Malliavin sensitivity – Milstein scheme, tangent process, Greek estimation.
-· HTS support – compute_energy(), relax_local() for mutation scanning.
-· CLI – refine, antibody, origami commands.
-· Scalable – O(N) memory, sparse graphs, chunked, mixed precision, GPU/CPU.
+### For De Novo & Engineered Proteins (small to medium, N < 500)
 
-🔧 Requirements
+- **Predictors/detectors** (AlphaFold3, ESMFold, RFdiffusion, ProteinMPNN) produce plausible backbones but often have:
+  - Sidechain clashes or wrong rotamers
+  - Distorted bond lengths/angles
+  - Unphysical Ramachandran outliers
+- **REAL FOLD ONE** fixes all‑atom geometry, repacks sidechains, and resolves steric clashes using full physics (LJ, Coulomb, torsion, H‑bond, Ramachandran) – without retraining.
+- Perfect as a **physics‑based polish** after any de novo design pipeline.
 
-· Python 3.8+
-· PyTorch ≥ 1.12
-· NumPy
-· (Optional) biotite – for PDB/mmCIF reading
-· (Optional) torch_cluster – fast neighbor search
-· (Optional) networkx – DNA origami cycle detection
+### For Large Natural Proteins / Complexes (N > 5,000 up to 100k+)
+
+- **Predictors have severe size limits** – AlphaFold2 (~2,500 residues), ESMFold (~4k). They cannot handle viral capsids, ribosomes, or large multimeric assemblies.
+- **Cryo‑EM / tomography** often produce medium‑resolution density maps → initial atomic models need physical relaxation.
+- **Homology models** of large domains may contain steric clashes, distorted geometry, and incorrect sidechain packing.
+- **REAL FOLD ONE** runs on any length (tested up to 100k+ residues) using sparse graphs and O(N) memory, **without retraining**. It refines structure while preserving global topology.
+
+## ✨ Key Features
+
+- **SOC Controller** – Learnable CSOC kernel `K_α(r) = (r+ε)^(−α)·exp(−r/λ)`, avalanche gradient, adaptive temperature.
+- **Semantic‑State Contraction (SSC v6)** – Deterministic fixed‑point operator (`ε_FP = 0.0028`, `σ → 1`).
+- **DiffRGRefiner** – Renormalization group coarse‑graining for large systems.
+- **Full‑atom protein** – Sidechains, LJ, Coulomb, torsion (χ), Ramachandran, H‑bond, solvation, clash.
+- **Full‑atom DNA/RNA** – Nucleotide topology, base pairing, stacking, backbone, LJ, Coulomb.
+- **Full‑atom ligand** – SDF/MOL2/PDB support, protein‑ligand interaction (LJ + Coulomb).
+- **Multimer & chain boundaries** – Cross‑chain interactions via sparse graphs.
+- **Antibody design** – CDR H3 loop remodeling, Rosetta scoring, affinity prediction (GNN).
+- **DNA origami** – Scaffold routing, staple design, oxDNA export, BV topological validation.
+- **Itô calculus & Malliavin sensitivity** – Milstein scheme, tangent process, Greek estimation.
+- **HTS support** – `compute_energy()`, `relax_local()` for mutation scanning.
+- **CLI** – `refine`, `antibody`, `origami` commands.
+- **Scalable** – O(N) memory, sparse graphs, chunked, mixed precision, GPU/CPU.
+
+## 🔧 Requirements
+
+- Python 3.8+
+- PyTorch ≥ 1.12
+- NumPy
+- (Optional) `biotite` – for PDB/mmCIF reading
+- (Optional) `torch_cluster` – fast neighbor search
+- (Optional) `networkx` – DNA origami cycle detection
 
 Install dependencies:
-
 ```bash
 pip install torch numpy biotite
 ```
 
 🚀 Quick Start
 
-Refine a protein from PDB
+Refine a de novo designed protein (from RFdiffusion/ProteinMPNN output)
 
 ```bash
-python real_fold_one.py refine -i input.pdb -o refined.pdb --steps 600 --gpu
+python real_fold_one.py refine -i designed.pdb -o refined.pdb --steps 300 --gpu
+```
+
+Refine a large natural complex (e.g., ribosome from cryo‑EM model)
+
+```bash
+python real_fold_one.py refine -i large_complex.pdb -o refined.pdb --steps 600 --gpu
 ```
 
 Refine with ligands
@@ -183,16 +207,16 @@ pip install pandas matplotlib seaborn tqdm
 
 🚀 Quick Start
 
-Single‑mutation scan on a protein PDB
+Single‑mutation scan on a de novo designed protein (from PDB)
 
 ```bash
-python real_fold_hts.py --pdb protein.pdb --scan --gpu
+python real_fold_hts.py --pdb designed.pdb --scan --gpu
 ```
 
-Scan DNA/RNA de novo (ideal helix)
+Scan natural protein for stability‑enhancing mutations
 
 ```bash
-python real_fold_hts.py --seq ACGTACGTACGT --scan
+python real_fold_hts.py --pdb natural.pdb --scan --ddg_threshold 0.5 --gpu
 ```
 
 Epistasis scan (double mutations)
@@ -269,3 +293,5 @@ Yoon A Limsuwan
 ---
 
 For academic and industrial protein/DNA/RNA design, mutation screening, and rational engineering.
+
+```
