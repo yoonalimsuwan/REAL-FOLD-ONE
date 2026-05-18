@@ -451,6 +451,37 @@ Thus, REAL FOLD ONE and Phenix are not competitors but complementary tools that
 together span the full spectrum from experiment‑driven to physics‑driven
 refinement.
 
+### Connecting Genomic Data to Structural Impact: Cancer Mutations and Duons
+
+REAL FOLD ONE is uniquely positioned to bridge clinical genomics and
+structural biology. By ingesting mutation data from cancer institutes
+(e.g., COSMIC, ICGC, ClinVar, and the Duon database), the engine can map
+thousands of patient‑derived variants directly onto protein structures and
+compute their effect on folding stability and electrostatic integrity.
+
+- **Physics‑based interpretation of clinical variants** – For every observed
+  missense mutation, REAL FOLD ONE evaluates ΔΔG and the local stress
+  redistribution (σ) through its SOC controller. This allows researchers to
+  distinguish between passenger mutations and driver mutations that
+  destabilise key domains or binding interfaces.
+
+- **Duon analysis** – Duons are codons that simultaneously encode an amino
+  acid and a splicing or regulatory signal. Mutations at these positions
+  can alter both protein sequence and gene regulation. REAL FOLD ONE can
+  combine structural stability scores with regulatory impact scores,
+  providing a unified picture of how duon mutations affect cellular function.
+
+- **Population‑scale scanning** – The high‑throughput mutation pipeline
+  (`real_fold_one_ht.py`) can scan thousands of cancer‑associated variants
+  in hours on a multi‑GPU cluster, generating structural scores that can
+  be correlated with patient survival data, drug response, or evolutionary
+  conservation.
+
+When coupled with the AI‑driven refinement architecture, this creates a
+feedback loop where clinical data inform structural models, and physics‑based
+models improve the interpretation of future cancer genomes—moving closer to
+truly personalised structural oncology.
+
 Citing REAL FOLD ONE
 
 ```
