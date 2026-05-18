@@ -413,6 +413,44 @@ REAL FOLD ONE thus repositions the frontier: instead of waiting for fault‑tole
 quantum computers, we can harness the synergy of differentiable physics and AI to
 solve macromolecular problems at constant cost today.
 
+### REAL FOLD ONE vs. Phenix: Complementary Roles in Structural Refinement
+
+Phenix is the gold standard for refining structures against experimental data
+(Cryo‑EM density maps, X‑ray diffraction). It optimises atomic coordinates to
+maximise agreement with the observed data, using a likelihood‑based target
+function. REAL FOLD ONE, by contrast, is a **physics‑ and AI‑driven refinement
+engine**—it does not require experimental data and instead minimises a fully
+differentiable energy function under SOC control.
+
+**When REAL FOLD ONE can replace Phenix (or where it excels):**
+- **Post‑AlphaFold 3 refinement** – AF3 models often contain minor steric clashes
+  or strained geometry. REAL FOLD ONE relaxes these purely through physics,
+  without any experimental map, often outperforming Phenix’s geometry
+  regularisation for this task.
+- **High‑throughput mutation scanning** – Phenix is not designed for thousands
+  of *in silico* mutations. REAL FOLD ONE’s HT module can evaluate ΔΔG values
+  across massive mutational landscapes on multi‑GPU systems.
+- **Differentiable integration with AI** – REAL FOLD ONE is fully differentiable
+  (PyTorch autograd). It can backpropagate gradients through the entire
+  refinement process, enabling AI‑driven surrogate models and closed‑loop
+  training. Phenix has no comparable capability.
+
+**When Phenix remains essential:**
+- **Experimental data fitting** – Phenix refines against real electron density
+  maps, optimising R‑work/R‑free. REAL FOLD ONE does not use experimental
+  data and cannot replace this step.
+
+**Ideal hybrid workflow:**
+1. Build an initial model with Phenix (using Cryo‑EM/X‑ray data).
+2. Pass the model to REAL FOLD ONE for final physics‑based cleanup,
+   resolving clashes and optimising electrostatics.
+3. For purely computational pipelines (AlphaFold → refinement → MD), REAL FOLD ONE
+   can be used without Phenix.
+
+Thus, REAL FOLD ONE and Phenix are not competitors but complementary tools that
+together span the full spectrum from experiment‑driven to physics‑driven
+refinement.
+
 Citing REAL FOLD ONE
 
 ```
