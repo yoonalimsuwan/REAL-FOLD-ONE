@@ -241,6 +241,6 @@ Contributions are welcome! Please open an issue to discuss proposed changes or s
 Contact
 
 Yoon A Limsuwan – GitHub
-Project link: https://github.com/your-username/real-fold-one
+Project link: https://github.com/yoonalimsuwan/REAL-FOLD-ONE
 
 ```
