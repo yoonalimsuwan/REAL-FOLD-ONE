@@ -1,192 +1,246 @@
-`
-# REAL FOLD ONE — Physics‑Based Refinement Engine
+``
+# REAL FOLD ONE
 
-**REAL FOLD ONE** is a SOC‑driven universal refinement engine for proteins, DNA/RNA, ligands, and multimers. It uses full all‑atom physics (bond, angle, torsion, Ramachandran, LJ, Coulomb, H‑bonds, solvation) with a novel Self‑Organised Criticality (SOC) controller that adaptively tunes temperature, friction, and avalanche propagation during optimisation. No retraining is needed – it works directly on any input structure.
+**SOC‑Controlled Universal Refinement & High‑Throughput Mutation Scanning Suite**
 
-**REAL FOLD ONE HTS** extends the engine to high‑throughput mutation scanning and epistasis analysis, enabling systematic ΔΔG evaluation for protein engineering and drug design.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 
----
-
-## Why Refinement?
-
-### For De Novo & Engineered Proteins (small to medium, N < 500)
-Predictors/detectors (AlphaFold3, ESMFold, RFdiffusion, ProteinMPNN) produce plausible backbones but often have:
-
-- Sidechain clashes or wrong rotamers
-- Distorted bond lengths/angles
-- Unphysical Ramachandran outliers
-
-**REAL FOLD ONE** fixes all‑atom geometry, repacks sidechains, and resolves steric clashes using full physics (LJ, Coulomb, torsion, H‑bond, Ramachandran) – without retraining.  
-*Perfect as a physics‑based polish after any de novo design pipeline.*
-
-### For Large Natural Proteins / Complexes (N > 5,000 up to 100k+)
-Predictors have severe size limits – AlphaFold2 (~2,500 residues), ESMFold (~4k). They cannot handle viral capsids, ribosomes, or large multimeric assemblies.
-
-Cryo‑EM / tomography often produce medium‑resolution density maps → initial atomic models need physical relaxation. Homology models of large domains may contain steric clashes, distorted geometry, and incorrect sidechain packing.
-
-**REAL FOLD ONE** runs on any length (tested up to 100k+ residues) using sparse graphs and O(N) memory, without retraining. It refines structure while preserving global topology.
+A unified physics‑based framework for macromolecular modelling and mutational scanning.
+Built around a novel Self‑Organised Criticality (SOC) controller, it refines proteins, DNA, RNA, and their complexes
+using a differentiable energy function, then scales to thousands of *in silico* mutations across multiple GPUs.
 
 ---
 
-## Key Features
+## Overview
 
-- **SOC Controller** – learnable kernel $K_\alpha(r) = (r+\epsilon)^{-\alpha} e^{-r/\lambda}$, avalanche‑driven stress relaxation, adaptive temperature & friction.
-- **Full‑atom protein sidechains** – all 20 amino acids with correct topology (no duplicate CB).
-- **Full‑atom DNA/RNA** – nucleotides with base pairing, stacking, and backbone.
-- **Ligand support** – SDF, MOL2, PDB ligands with GAFF‑style force field.
-- **Multimer handling** – chain boundaries, cross‑chain interactions, chain‑break penalties.
-- **Advanced electrostatics** – Sparse PME, geometric multigrid Poisson solver, block‑wise multipole correction.
-- **Multiscale refinement** – RG coarse‑graining for fast convergence.
-- **Itô SDE** – Milstein‑scheme Langevin dynamics for stochastic exploration.
-- **Malliavin sensitivity** – compute Greeks for temperature or other parameters.
-- **Antibody design** – CDR H3 loop modelling with Rosetta‑style scoring.
-- **DNA origami** – scaffold routing, staple design, oxDNA export, BV topology check.
-- **High‑throughput scanning** (HTS module) – single‑mutation ΔΔG scan, epistasis analysis, publication‑ready plots.
-- **Scalability** – O(N) graphs, chunked edge building, CPU‑only mode for low‑RAM environments (3 GB), multi‑GPU parallelism.
+**REAL FOLD ONE** is composed of three main components:
+
+| Component | Description |
+|-----------|-------------|
+| **REAL FOLD ONE** | Core refinement engine with full‑atom force field, PME, multigrid, and SOC‑driven Langevin dynamics. |
+| **REAL FOLD ONE HT** | High‑throughput mutation scanning and epistasis analysis (latest version). |
+| **REAL FOLD ONE HTS** | Earlier prototype of the scanner; **HT** is the recommended, production‑ready upgrade. |
+
+All tools share the same physics backend and can be run on CPU, a single GPU, or multiple GPUs via `torch.multiprocessing`.
 
 ---
 
 ## Installation
 
 ```bash
-git clone https://github.com/your-org/real-fold-one.git
+git clone https://github.com/your-username/real-fold-one.git
 cd real-fold-one
-pip install -r requirements.txt
+
+# Create environment (optional)
+conda create -n realfold python=3.10 -y
+conda activate realfold
+
+# Install dependencies
+pip install torch numpy pandas tqdm
+pip install biotite seaborn matplotlib networkx  # optional, for I/O and plots
+pip install torch-cluster                          # optional, for faster neighbor lists
 ```
 
-Requirements
-
-· Python ≥ 3.9
-· PyTorch ≥ 2.0
-· numpy, pandas, tqdm
-· Optional: torch_cluster (for fast neighbour graphs), biotite (for PDB/mmCIF I/O), matplotlib+seaborn (for HTS plots), networkx (for DNA origami BV)
-
 ---
+
+REAL FOLD ONE — Refinement Engine
+
+Key Features
+
+· SOC Controller – learnable CSOC kernel & Semantic‑State Contraction adaptively tune temperature and friction during refinement.
+· Full‑Atom Physics – AMBER ff14SB‑like parameters for proteins, OL15‑like for DNA/RNA, GAFF2 for ligands.
+· Advanced Electrostatics – Sparse PME, geometric multigrid Poisson solver, block‑wise multipole long‑range correction.
+· Multiscale Refinement – RG coarse‑graining periodically smooths the trajectory.
+· Simulated Annealing – optional temperature schedule from 1000 K down to 300 K.
+· Training Module – fine‑tune the SOC kernel on native structures.
+· DNA Origami – wireframe routing and full‑atom PDB export.
 
 Quick Start
 
-Refinement
-
 ```bash
-python real_fold_one.py refine -i input.pdb -o refined.pdb --steps 300 --device cuda
+# Refine a protein from PDB (CA atoms are extracted)
+python real_fold_one.py refine --input 1abc.pdb --output refined.pdb --steps 300
+
+# Use GPU, enable PME, and export full-atom structure
+python real_fold_one.py refine --input 1abc.pdb --output refined_full.pdb --steps 500 --gpu --pme --full_atom
+
+# Run a gradient validation test
+python real_fold_one.py test
 ```
 
-For advanced electrostatics:
+Command Line Options (refine)
+
+Flag Description
+--input, -i Input PDB or mmCIF file
+--chain Chain ID to extract
+--output, -o Output PDB filename (CA‑only or full‑atom)
+--steps Number of refinement steps (default: 600)
+--lr Learning rate for Adam (default: 1e-4)
+--pme Use Particle‑Mesh Ewald
+--multigrid Use geometric multigrid Poisson solver
+--block_lr Add block‑wise long‑range correction
+--ligand One or more ligand files (SDF, MOL2, PDB)
+--full_atom Export full‑atom PDB (sidechains reconstructed)
+--trajectory Save trajectory as .npy file
+--device cpu, cuda, or auto (default)
+--milstein Use Milstein scheme for the Langevin SDE
+--no_rg Disable RG refinement
+--no_ssc Disable Semantic‑State Contraction
+
+Antibody CDR Modelling
 
 ```bash
-python real_fold_one.py refine -i input.pdb --pme --block_lr --device cuda
+python real_fold_one.py antibody --antigen antigen.pdb --cdr_start 95 --cdr_end 102 --output antibody.pdb
 ```
 
-Energy evaluation (single point)
+DNA Origami Design
 
 ```bash
-python real_fold_one.py refine -i input.pdb --steps 0
+# shape.json contains "vertices" and "edges"
+python real_fold_one.py origami --shape shape.json --output my_origami
 ```
 
-Antibody design
-
-```bash
-python real_fold_one.py antibody --antigen antigen.pdb --output antibody.pdb
-```
-
-DNA origami
-
-```bash
-python real_fold_one.py origami --shape shape.json --output my_origami --bv_check
-```
-
-Mutation scanning (HTS)
-
-```bash
-python real_fold_one_hts.py --pdb input.pdb --scan --gpu
-```
-
-Epistasis scan
-
-```bash
-python real_fold_one_hts.py --pdb input.pdb --epistasis --max_epi_pairs 1000 --gpu
-```
+This produces my_origami.pdb (full‑atom DNA model) and my_origami.top/.dat (oxDNA format).
 
 ---
 
-How It Works
+REAL FOLD ONE HT — High‑Throughput Mutation Scanner
 
-1. Load structure – CA coordinates and sequence (from PDB or DNA/RNA helix).
-2. Build hierarchical neighbour lists – clash, LJ, and electrostatic cutoffs.
-3. Reconstruct backbone – N, C, O positions.
-4. Build full‑atom sidechains – using internal coordinates and χ torsion angles.
-5. Define physics energy – bond, angle, Ramachandran, clash, H‑bond, electrostatics (with optional PME/Multigrid), solvation, SOC.
-6. Refine – Adam optimizer with SOC‑controlled Langevin noise, avalanche gradients, and RG coarse‑graining.
-7. Output – refined CA coordinates (and optional trajectory).
+Note: real_fold_one_ht.py is the recommended scanner.
+The earlier real_fold_one_hts.py is kept for reference but HT is more robust, supports resume/checkpointing, and handles multi‑GPU parallelism safely.
+
+Features
+
+· Full Single‑Mutation Scan – every residue → every allowed monomer.
+· Targeted Mutation Lists – provide a JSON file of specific mutations to evaluate.
+· Double‑Mutant Epistasis – random sampling or user‑supplied pairs.
+· Local Relaxation – relaxes a small window around the mutation site for fast ΔΔG estimation.
+· Multi‑GPU Parallelism – worker pool distributes mutations across available GPUs.
+· Checkpoint & Resume – auto‑saves intermediate results every 100 mutations; use --resume to continue.
+· Publication‑Ready Plots – ΔΔG distribution, mutational landscape heatmap, position‑tolerance profile, epistasis distribution, additivity scatter.
+
+Quick Start
+
+```bash
+# Full scan on a protein (requires PDB)
+python real_fold_one_ht.py --pdb 1abc.pdb --scan --output ht_output
+
+# Scan DNA from sequence (ideal helix is built)
+python real_fold_one_ht.py --seq "ATGCGTACGTAG" --scan --output dna_scan
+
+# Scan with GPU and resume support
+python real_fold_one_ht.py --pdb 1abc.pdb --scan --gpu --num_gpus 2 --resume
+
+# Targeted mutations from a JSON file
+python real_fold_one_ht.py --pdb 1abc.pdb --mutlist mutations.json --output targeted
+
+# Quick single mutation evaluation
+python real_fold_one_ht.py --pdb 1abc.pdb --single "0:5:A"
+```
+
+Epistasis Scanning
+
+```bash
+# Random epistasis pairs (max 1000 by default)
+python real_fold_one_ht.py --pdb 1abc.pdb --epistasis --max_epi 500
+
+# From a predefined list
+python real_fold_one_ht.py --pdb 1abc.pdb --epistasis --epipairs pairs.json
+```
+
+Input File Formats
+
+Mutation list JSON (for --mutlist):
+
+```json
+[[0, 5, "A"], [0, 10, "G"], [1, 23, "T"]]
+```
+
+Each entry: [chain_index, position_in_chain, new_monomer].
+
+Epistasis pair list JSON (for --epipairs):
+
+```json
+[[0, 5, 0, 10], [0, 5, 1, 23]]
+```
+
+Each entry: [chain1, pos1, chain2, pos2].
+
+Output Files
+
+File Description
+single_mutations.csv All single‑mutation results (ΔΔG, energies, type)
+epistasis.csv Epistasis pairs with additive vs double‑mutant ΔΔG
+summary.json Wild‑type energy and mutation counts
+ddg_distribution.png Histogram of ΔΔG values
+mutational_landscape.png Heatmap of mutations (position × mutant)
+position_profile.png Mean ΔΔG per residue with standard deviation
+epistasis_distribution.png Histogram of epistasis (ε)
+additivity_scatter.png Additive vs double‑mutant ΔΔG scatter plot
 
 ---
 
-SOC Engine
+REAL FOLD ONE HTS (Legacy)
 
-The Self‑Organised Criticality controller brings three unique mechanisms:
-
-· Avalanche propagation – when a region accumulates stress, the gradient is redistributed to neighbours via the learnable kernel $K_\alpha$.
-· Adaptive temperature – computed from the system’s structural displacement (sigma), low‑pass filtered through SSC.
-· Learnable α – the power‑law exponent is optimised during refinement to match the system’s correlation length.
-
-These properties help escape local minima, accelerate convergence, and improve physical realism, especially in large, flexible assemblies.
+The original high‑throughput script (real_fold_one_hts.py) works but lacks the refined multi‑GPU handling and checkpointing present in HT. It is kept for reproducibility; new projects should use real_fold_one_ht.py.
 
 ---
 
-HTS Module
+Training the SOC Kernel
 
-The real_fold_one_hts.py script enables:
+```bash
+# Train kernel on a set of native PDB files
+python real_fold_one.py train --input native1.pdb native2.pdb --epochs 100 --output kernel_params.json
+```
 
-· Full single‑mutation scan – for every position, all possible monomer substitutions.
-· Epistasis scan – double‑mutant ΔΔG, additivity, and epistasis (ε) computation.
-· Local relaxation – only a window around the mutation is relaxed for speed.
-· Outputs – CSV tables, ΔΔG distributions, mutational landscape heatmaps, position profiles, epistasis histograms, additivity scatter plots.
-
-Ideal for deep mutational scanning (DMS), protein stability engineering, and predicting resistance mutations.
+The trained alpha and lambda can then be loaded into the refinement engine (set init_alpha and init_lambda in CSOCKernel).
 
 ---
 
-Performance
+Validation
 
-· CPU (Intel i9, 3 GB RAM): ~1–2 residues/second for small proteins.
-· GPU (NVIDIA T4): ~30–100 residues/second.
-· Multi‑GPU: linear speed‑up with number of GPUs (HTS).
-· Large systems (50k residues): refinement runs in hours on a single GPU.
+· Gradient check: python real_fold_one.py test verifies analytical gradients against finite differences.
+· RMSD computation: compute_rmsd(coords1, coords2) is provided for comparing structures.
+· BV topological check: For DNA origami, --bv_check verifies the classical master equation of the BV formalism.
 
 ---
 
-Citing
+Performance Tips
 
-If you use REAL FOLD ONE in your research, please cite:
+· Use torch-cluster for faster neighbour list construction.
+· For large systems (>10 000 residues), enable --use_rg (default) and increase --rebuild_interval.
+· Set OMP_NUM_THREADS to control CPU parallelism when running on CPU.
+· For multi‑GPU scanning, ensure each GPU has enough memory for the full system (peak memory ~2–3 GB for a 500‑residue protein with sidechains).
 
-Limsuwan, Y. (2026). REAL FOLD ONE: SOC‑Controlled Universal Refinement Engine. 
+---
 
-https://doi.org/10.5281/zenodo.20194882
+Citing REAL FOLD ONE
 
-https://github.com/yoonalimsuwan/REAL-FOLD-ONE
+If you use this software in your research, please cite:
 
-https://doi.org/10.5281/zenodo.20257600
+```
+Yoon A Limsuwan. "REAL FOLD ONE: SOC‑Controlled Universal Refinement Engine."
+Zenodo, 2026. DOI: 10.5281/zenodo.XXXXXXX
+```
 
 ---
 
 License
 
-MIT License. See LICENSE file for details.
+This project is licensed under the MIT License – see the LICENSE file for details.
+
+---
+
+Contributing
+
+Contributions are welcome! Please open an issue to discuss proposed changes or submit a pull request. For major features, consider contacting the author first.
 
 ---
 
 Contact
 
-Yoon A Limsuwan – [msps4u@gmail.com]
-
-https://orcid.org/0009-0008-2374-0788
-
-Project link: 
-
-https://github.com/yoonalimsuwan/REAL-FOLD-ONE
-
-https://doi.org/10.5281/zenodo.20257600
-
-MADE IN THAILAND.
+Yoon A Limsuwan – GitHub
+Project link: https://github.com/your-username/real-fold-one
 
 ```
