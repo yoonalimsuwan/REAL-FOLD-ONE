@@ -208,7 +208,7 @@ allowing larger integration time‑steps and avoiding early crashes.
 Installation
 
 ```bash
-git clone https://github.com/your-username/real-fold-one.git
+git clone https://github.com/yoonalimsuwan/real-fold-oneeal-fold-one.git
 cd real-fold-one
 
 # Create a fresh environment (optional)
@@ -396,6 +396,6 @@ a pull request. For major features, we recommend contacting the author first.
 Contact
 
 Yoon A Limsuwan – GitHub
-Project link: https://github.com/your-username/real-fold-one
+Project link: https://github.com/yoonalimsuwan/https
 
 ```
