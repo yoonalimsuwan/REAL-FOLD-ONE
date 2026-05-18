@@ -13,34 +13,6 @@ and their complexes using a fully differentiable energy function, then scales to
 
 ---
 
-## Table of Contents
-
-- [Architectural Philosophy](#architectural-philosophy)
-- [Overview](#overview)
-- [Key Features](#key-features)
-- [Integration with Structure Predictors](#integration-with-structure-predictors)
-  - [Natural Proteins](#natural-proteins)
-  - [*De Novo* Designed Proteins](#de-novo-designed-proteins)
-  - [Synthetic Proteins & Ligand Complexes](#synthetic-proteins--ligand-complexes)
-  - [Typical Refinement Pipeline (AF3 → REAL FOLD ONE → OpenMM)](#typical-refinement-pipeline-af3--real-fold-one--openmm)
-- [Installation](#installation)
-- [Quick Start – Refinement Engine](#quick-start--refinement-engine)
-- [High‑Throughput Mutation Scanning (HT)](#high-throughput-mutation-scanning-ht)
-  - [Targeted vs Full Scan](#targeted-vs-full-scan)
-  - [Epistasis Analysis](#epistasis-analysis)
-  - [Workflow: Targeted → Global Optimization](#workflow-targeted--global-optimization)
-- [Training the SOC Kernel](#training-the-soc-kernel)
-- [Antibody CDR Modelling](#antibody-cdr-modelling)
-- [DNA Origami Design](#dna-origami-design)
-- [Validation & Testing](#validation--testing)
-- [Performance Tips](#performance-tips)
-- [Citing REAL FOLD ONE](#citing-real-fold-one)
-- [License](#license)
-- [Contributing](#contributing)
-- [Contact](#contact)
-
----
-
 ## Architectural Philosophy
 
 REAL FOLD ONE is designed with **strategic autonomy** and **hardware democratisation** at its core.
