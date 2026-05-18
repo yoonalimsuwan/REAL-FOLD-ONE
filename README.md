@@ -16,6 +16,7 @@ polish predicted models, evaluate mutational landscapes, and design DNA origami.
 
 ## Table of Contents
 
+- [Architectural Philosophy](#architectural-philosophy)
 - [Overview](#overview)
 - [Key Features](#key-features)
 - [Integration with Structure Predictors](#integration-with-structure-predictors)
@@ -35,6 +36,44 @@ polish predicted models, evaluate mutational landscapes, and design DNA origami.
 - [License](#license)
 - [Contributing](#contributing)
 - [Contact](#contact)
+
+---
+
+## Architectural Philosophy
+
+REAL FOLD ONE is designed with **strategic autonomy** and **hardware democratisation** at its core.
+Rather than hand‑crafting vendor‑specific CUDA kernels, the engine is written entirely in
+**PyTorch’s high‑level tensor primitives** (matrix operations, `torch.cdist`, `torch.fft`, automatic
+differentiation). This architectural choice delivers three decisive advantages:
+
+### 1. True Vendor Neutrality
+
+- No `nvcc` dependency, no embedded CUDA C++.  
+- PyTorch’s own runtime backends (`CUDA`, `MPS`, `torch_npu` for Ascend, CPU) are the **only**
+  hardware abstraction layer.  
+- When a chip vendor (Huawei, Apple, Moore Threads, AMD, Intel) improves its PyTorch backend,
+  **REAL FOLD ONE instantly benefits without a single line of code being changed**.
+
+### 2. Automatic Kernel Fusion
+
+- PyTorch’s graph compilers (`torch.compile`, TorchDynamo, Inductor) aggressively fuse chains of
+  small operations—distance calculations, masking, scatter‑adds—into single on‑chip kernels.  
+- This drastically reduces memory bandwidth pressure, the dominant bottleneck in GPU‑accelerated
+  energy functions.  
+- Consequently, performance on non‑NVIDIA hardware (Ascend NPU, Apple MPS) approaches or matches
+  hand‑tuned CUDA implementations, while remaining 100 % portable.
+
+### 3. Democratisation of Science
+
+- The engine runs **unchanged** on a 3 GB‑RAM CPU, an Apple M1 laptop, a Colab T4 GPU, a
+  multi‑GPU Ascend cluster, or a high‑end DGX workstation.  
+- Switching hardware is a single command‑line flag: `--device cpu`, `--device cuda`, `--device mps`,
+  `--device npu`.  
+- This eliminates the traditional “rich lab / poor lab” divide, making cutting‑edge physics‑based
+  refinement accessible to researchers everywhere, regardless of their hardware supply chain.
+
+In a world of shifting semiconductor alliances, REAL FOLD ONE represents a **new generation of
+biomolecular software**—one that refuses to be locked into a single vendor’s ecosystem.
 
 ---
 
@@ -208,7 +247,7 @@ allowing larger integration time‑steps and avoiding early crashes.
 Installation
 
 ```bash
-git clone https://github.com/yoonalimsuwan/real-fold-oneeal-fold-one.git
+git clone https://github.com/yoonalimsuwan/REAL-FOLD-ONE.git
 cd real-fold-one
 
 # Create a fresh environment (optional)
@@ -375,7 +414,7 @@ If you use this software, please cite:
 
 ```
 Yoon A Limsuwan. "REAL FOLD ONE: SOC‑Controlled Universal Refinement Engine."
-Zenodo, 2026.  DOI: 10.5281/zenodo.20263664
+Zenodo, 2026. https://doi.org/10.5281/zenodo.20263664
 ```
 
 ---
@@ -396,6 +435,6 @@ a pull request. For major features, we recommend contacting the author first.
 Contact
 
 Yoon A Limsuwan – GitHub
-Project link: https://github.com/yoonalimsuwan/https
+Project link: https://github.com/yoonalimsuwan/REAL-FOLD-ONE
 
 ```
