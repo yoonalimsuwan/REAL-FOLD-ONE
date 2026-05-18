@@ -19,6 +19,10 @@ polish predicted models, evaluate mutational landscapes, and design DNA origami.
 - [Overview](#overview)
 - [Key Features](#key-features)
 - [Integration with Structure Predictors](#integration-with-structure-predictors)
+  - [Natural Proteins](#natural-proteins)
+  - [*De Novo* Designed Proteins](#de-novo-designed-proteins)
+  - [Synthetic Proteins & Ligand Complexes](#synthetic-proteins--ligand-complexes)
+  - [Typical Refinement Pipeline (AF3 → REAL FOLD ONE → OpenMM)](#typical-refinement-pipeline-af3--real-fold-one--openmm)
 - [Installation](#installation)
 - [Quick Start – Refinement Engine](#quick-start--refinement-engine)
 - [High‑Throughput Mutation Scanning](#high-throughput-mutation-scanning)
@@ -89,7 +93,7 @@ Both modules share the same physics backend and can be run on CPU, single GPU, o
 ## Integration with Structure Predictors
 
 REAL FOLD ONE is designed as a **post‑processing refinement engine** for any structure predictor
-(AlphaFold, ESMFold, Rosetta, etc.). It does **not** predict structures from sequence; instead,
+(AlphaFold 3, ESMFold, Rosetta, etc.). It does **not** predict structures from sequence; instead,
 it takes initial Cα coordinates and uses its physics‑based energy function to:
 
 - Correct local strain and steric clashes.
@@ -99,7 +103,7 @@ it takes initial Cα coordinates and uses its physics‑based energy function to
 ### Natural Proteins
 
 ```text
-Sequence → Predictor (e.g. AlphaFold) → Cα model → REAL FOLD ONE refine → Full‑atom refined structure
+Sequence → Predictor (e.g. AlphaFold 3) → Cα model → REAL FOLD ONE refine → Full‑atom refined structure
 ```
 
 After running a prediction (e.g., AlphaFold‑Multimer), simply pass the resulting PDB to
@@ -131,12 +135,80 @@ protein‑ligand complexes, REAL FOLD ONE supports:
 Thus, synthetic biology designs can be screened for stability and binding affinity
 directly within the refinement workflow.
 
+Typical Refinement Pipeline (AF3 → REAL FOLD ONE → OpenMM)
+
+For production‑grade Molecular Dynamics (MD), REAL FOLD ONE acts as the essential
+pre‑conditioner that bridges the gap between a predicted structure and a long‑term
+explicit‑solvent simulation.
+
+```
+┌─────────────┐      ┌──────────────────┐      ┌────────────┐
+│ AlphaFold 3 │ ──► │  REAL FOLD ONE   │ ──► │  OpenMM    │
+│  (or any    │      │   refine /       │      │  (explicit │
+│  predictor) │      │   full_atom      │      │   solvent  │
+│             │      │   export)        │      │   MD)      │
+└─────────────┘      └──────────────────┘      └────────────┘
+```
+
+Why this step is necessary:
+
+· AF3 models are often near‑native but may still contain minor steric clashes or
+  sub‑optimal side‑chain rotamers that would cause the MD integrator to “blow up”
+  in the first few femtoseconds.
+· REAL FOLD ONE’s SOC‑driven avalanche relaxation and full‑atom energy
+  minimisation gently resolve these hot‑spots without distorting the overall
+  fold, producing a clean, physics‑ready starting structure.
+· The resulting PDB (full‑atom) can be directly loaded into OpenMM (or any MD engine)
+  for solvation, equilibration, and production runs.
+
+Complete command‑line example:
+
+```bash
+# Step 1: Obtain predicted structure from AlphaFold 3 (e.g., folded_model.pdb)
+
+# Step 2: Refine and rebuild full atoms with REAL FOLD ONE
+python real_fold_one.py refine \
+    --input folded_model.pdb \
+    --output refined_full.pdb \
+    --steps 500 \
+    --pme \
+    --full_atom \
+    --gpu
+
+# Step 3: (Optional) Validate the refined structure
+python real_fold_one.py test
+
+# Step 4: Prepare OpenMM simulation using the refined structure as input
+# (example using OpenMM’s Python API)
+python -c "
+import openmm.app as app
+import openmm as mm
+from openmm import unit
+
+# Load refined structure
+pdb = app.PDBFile('refined_full.pdb')
+forcefield = app.ForceField('amber14-all.xml', 'amber14/tip3p.xml')
+system = forcefield.createSystem(pdb.topology, nonbondedMethod=app.PME,
+                                 nonbondedCutoff=1.0*unit.nanometers,
+                                 constraints=app.HBonds)
+integrator = mm.LangevinIntegrator(300*unit.kelvin, 1.0/unit.picoseconds, 2.0*unit.femtoseconds)
+simulation = app.Simulation(pdb.topology, system, integrator)
+simulation.context.setPositions(pdb.positions)
+simulation.minimizeEnergy()  # optional, usually not needed after REAL FOLD ONE
+simulation.reporters.append(app.PDBReporter('output.pdb', 1000))
+simulation.step(100000)  # 200 ps
+"
+```
+
+The refinement step ensures that the MD run starts from an energetically relaxed state,
+allowing larger integration time‑steps and avoiding early crashes.
+
 ---
 
 Installation
 
 ```bash
-git clone https://github.com/yoonalimsuwan/REAL-FOLD-ONE.git
+git clone https://github.com/your-username/real-fold-one.git
 cd real-fold-one
 
 # Create a fresh environment (optional)
@@ -303,7 +375,7 @@ If you use this software, please cite:
 
 ```
 Yoon A Limsuwan. "REAL FOLD ONE: SOC‑Controlled Universal Refinement Engine."
-Zenodo, 2026. DOI: https://doi.org/10.5281/zenodo.20257600
+Zenodo, 2026. DOI: 10.5281/zenodo.XXXXXXX
 ```
 
 ---
@@ -324,4 +396,6 @@ a pull request. For major features, we recommend contacting the author first.
 Contact
 
 Yoon A Limsuwan – GitHub
-Project link: https://github.com/yoonalimsuwan/REAL-FOLD-ONE
+Project link: https://github.com/your-username/real-fold-one
+
+```
