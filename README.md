@@ -315,6 +315,63 @@ Performance Tips
 
 ---
 
+`
+### Future: AI‑Driven Refinement and the Path to O(1) Complexity
+
+REAL FOLD ONE is built from the ground up as a **differentiable physics engine**.
+Every component—the SOC controller, CSOC kernel, energy terms, and even the implicit solvent
+approximation—runs inside PyTorch’s autograd graph. This architectural choice means that
+REAL FOLD ONE is not merely a refinement tool; it is also a **native AI platform**.
+
+Because the entire pipeline is differentiable, it can be directly embedded as a layer in a
+larger neural network, or used to generate physically rigorous training data for deep learning
+models. This opens three concrete paths toward **near‑O(1) complexity** in macromolecular
+refinement and simulation:
+
+1. **Learned Refinement Surrogates**  
+   A neural network (e.g., an SE(3)‑equivariant GNN) can be trained on pairs of
+   (initial coarse structure, SOC‑refined full‑atom structure). Once trained, the network
+   predicts the refined structure in a single forward pass—completely bypassing the iterative
+   energy minimisation. The computational cost becomes independent of protein size, yielding
+   *de facto* O(1) behaviour.
+
+2. **Adaptive Simulation Control**  
+   The SOC controller outputs a real‑time stress metric (σ) that quantifies local strain.
+   An AI agent can read this signal to dynamically decide:
+   - when to hand a structure back to REAL FOLD ONE for further refinement,
+   - when to change the integration time‑step in a downstream MD engine (GPUMD, OpenMM),
+   - or when to terminate a simulation because the system has reached equilibrium.
+   This removes the manual tuning that dominates large‑scale MD, making the entire pipeline
+   more efficient and less dependent on human expertise.
+
+3. **Learned Force Fields and Differentiable MD**  
+   The same differentiable backbone allows REAL FOLD ONE to adopt machine‑learning force
+   fields (e.g., MACE‑MP, Allegro, NEP). In this scenario, the energy function itself is a
+   neural network, and refinement becomes gradient descent through a learned potential.
+   Coupled with a differentiable MD engine, the whole simulation loop could be optimised
+   end‑to‑end—for instance, to minimise the SOC stress of the final equilibrated ensemble.
+
+**Vision**  
+REAL FOLD ONE sits at the centre of a future stack:
+
+```
+
+Sequence → AF3 → REAL FOLD ONE → AI‑Guided MD (GPUMD / MindSPONGE)
+↕
+Learned Surrogate Models
+
+```
+
+In this ecosystem, REAL FOLD ONE serves as both a **physics‑based teacher** and a
+**differentiable evaluation module**. The result is a self‑improving loop that continuously
+shrinks the gap between prediction, refinement, and simulation—ultimately delivering
+refined, production‑ready structures with a computational cost that approaches constant
+time for the end user.
+
+*This is not a distant dream; the differentiable architecture of REAL FOLD ONE already
+provides all the primitives necessary to build these AI‑driven capabilities.*
+```
+
 Citing REAL FOLD ONE
 
 ```
