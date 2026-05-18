@@ -460,7 +460,7 @@ If you use this software, please cite:
 
 ```
 Yoon A Limsuwan. "REAL FOLD ONE: SOC‑Controlled Universal Refinement Engine."
-Zenodo, 2026. DOI: 10.5281/zenodo.XXXXXXX
+Zenodo, 2026.  DOI: 10.5281/zenodo.20264426
 ```
 
 ---
@@ -476,11 +476,10 @@ Contributing
 Contributions are welcome! Please open an issue to discuss proposed changes or submit
 a pull request. For major features, we recommend contacting the author first.
 
----
-
-Contact
+-httpsontact
 
 Yoon A Limsuwan – GitHub
-Project link: https://github.com/your-username/real-fold-one
+Project link: https://github.com/yoonalimsuwan/REAL-FOLD-ONE
+
 
 ```
