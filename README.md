@@ -6,11 +6,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 
-A unified physics‑based framework that refines and scans macromolecular structures—
-from natural proteins and nucleic acids to *de novo* designs and synthetic complexes.
-Built around a novel Self‑Organised Criticality (SOC) controller, it leverages a full‑atom
-differentiable energy function (AMBER/OL15/GAFF2) and advanced electrostatics to
-polish predicted models, evaluate mutational landscapes, and design DNA origami.
+A unified physics‑based framework for macromolecular refinement and mutational scanning.
+Built around a novel **Self‑Organised Criticality (SOC) controller**, it refines proteins, DNA, RNA,
+and their complexes using a fully differentiable energy function, then scales to thousands of
+*in silico* mutations across multiple GPUs — all without writing a single line of CUDA C++.
 
 ---
 
@@ -26,7 +25,10 @@ polish predicted models, evaluate mutational landscapes, and design DNA origami.
   - [Typical Refinement Pipeline (AF3 → REAL FOLD ONE → OpenMM)](#typical-refinement-pipeline-af3--real-fold-one--openmm)
 - [Installation](#installation)
 - [Quick Start – Refinement Engine](#quick-start--refinement-engine)
-- [High‑Throughput Mutation Scanning](#high-throughput-mutation-scanning)
+- [High‑Throughput Mutation Scanning (HT Module)](#high-throughput-mutation-scanning-ht-module)
+  - [Targeted vs Full Scan](#targeted-vs-full-scan)
+  - [Epistasis Analysis](#epistasis-analysis)
+  - [Workflow: Targeted → Global Optimization](#workflow-targeted--global-optimization)
 - [Training the SOC Kernel](#training-the-soc-kernel)
 - [Antibody CDR Modelling](#antibody-cdr-modelling)
 - [DNA Origami Design](#dna-origami-design)
@@ -42,22 +44,22 @@ polish predicted models, evaluate mutational landscapes, and design DNA origami.
 ## Architectural Philosophy
 
 REAL FOLD ONE is designed with **strategic autonomy** and **hardware democratisation** at its core.
-Rather than hand‑crafting vendor‑specific CUDA kernels, the engine is written entirely in
-**PyTorch’s high‑level tensor primitives** (matrix operations, `torch.cdist`, `torch.fft`, automatic
-differentiation). This architectural choice delivers three decisive advantages:
+Rather than hand‑crafting vendor‑specific CUDA kernels, the entire engine is written in
+**PyTorch’s high‑level tensor primitives** — matrix operations, `torch.cdist`, `torch.fft`,
+automatic differentiation. This architectural choice delivers three decisive advantages:
 
 ### 1. True Vendor Neutrality
 
 - No `nvcc` dependency, no embedded CUDA C++.  
-- PyTorch’s own runtime backends (`CUDA`, `MPS`, `torch_npu` for Ascend, CPU) are the **only**
-  hardware abstraction layer.  
-- When a chip vendor (Huawei, Apple, Moore Threads, AMD, Intel) improves its PyTorch backend,
-  **REAL FOLD ONE instantly benefits without a single line of code being changed**.
+- PyTorch’s own runtime backends — **CUDA**, **MPS** (Apple Silicon), **`torch_npu`** (Huawei Ascend),
+  **CPU** — are the only hardware abstraction layer.  
+- When a chip vendor improves its PyTorch backend, **REAL FOLD ONE instantly benefits without
+  a single line of code being changed**.
 
 ### 2. Automatic Kernel Fusion
 
 - PyTorch’s graph compilers (`torch.compile`, TorchDynamo, Inductor) aggressively fuse chains of
-  small operations—distance calculations, masking, scatter‑adds—into single on‑chip kernels.  
+  small operations — distance calculations, masking, scatter‑adds — into single on‑chip kernels.  
 - This drastically reduces memory bandwidth pressure, the dominant bottleneck in GPU‑accelerated
   energy functions.  
 - Consequently, performance on non‑NVIDIA hardware (Ascend NPU, Apple MPS) approaches or matches
@@ -73,7 +75,7 @@ differentiation). This architectural choice delivers three decisive advantages:
   refinement accessible to researchers everywhere, regardless of their hardware supply chain.
 
 In a world of shifting semiconductor alliances, REAL FOLD ONE represents a **new generation of
-biomolecular software**—one that refuses to be locked into a single vendor’s ecosystem.
+biomolecular software** — one that refuses to be locked into a single vendor’s ecosystem.
 
 ---
 
@@ -84,42 +86,46 @@ REAL FOLD ONE provides two tightly integrated modules:
 | Module | File | Purpose |
 |--------|------|---------|
 | **Core Refinement Engine** | `real_fold_one.py` | Full‑atom refinement, training, antibody, origami |
-| **HT Mutation Scanner** | `real_fold_one_ht.py` | High‑throughput ΔΔG and epistasis scanning |
+| **HT Mutation Scanner** | `real_fold_one_ht.py` | High‑throughput ΔΔG and epistasis scanning (recommended) |
 
+A legacy scanner (`real_fold_one_hts.py`) is also included for reference; however, **HT** is the
+recommended, production‑ready version with checkpointing, resume, and safe multi‑GPU support.
 Both modules share the same physics backend and can be run on CPU, single GPU, or multiple GPUs.
 
 ---
 
 ## Key Features
 
-### Refinement Engine
+### Refinement Engine (`real_fold_one.py`)
 
-- **SOC Controller** – learnable CSOC kernel and Semantic‑State Contraction (SSC) low‑pass filter adaptively tune temperature and friction during Langevin dynamics.
+- **SOC Controller** – learnable CSOC kernel and Semantic‑State Contraction (SSC) low‑pass filter
+  adaptively tune temperature and friction during Langevin dynamics.
 - **Multiscale Refinement** – RG coarse‑graining periodically removes high‑frequency noise.
 - **Full‑Atom Physics**
   - Proteins: AMBER ff14SB‑like Lennard‑Jones parameters and partial charges for all side‑chain atoms.
   - DNA/RNA: OL15‑like parameters for all nucleotides (C4′, phosphate, base).
   - Ligands: GAFF2 force field with automatic atom‑type assignment and topology generation.
   - Antibodies: specialised Rosetta‑like scoring for antigen‑antibody interfaces.
-- **Advanced Electrostatics**
-  - Sparse **PME** (Particle Mesh Ewald) for long‑range electrostatics.
-  - Geometric **multigrid Poisson solver** (V‑cycle) for direct potential calculation.
-  - **Block‑wise long‑range correction** via multipole expansion.
-- **Hierarchical Neighbor Lists** – separate cutoffs for clash (2.5 Å), LJ (6 Å), and electrostatics (12 Å) for efficiency.
+- **Advanced Electrostatics** – Sparse PME, geometric multigrid Poisson solver, block‑wise
+  multipole long‑range correction.
+- **Hierarchical Neighbor Lists** – separate cutoffs for clash (2.5 Å), LJ (6 Å), and electrostatics
+  (12 Å) for efficiency.
 - **DNA Origami** – wireframe routing, staple design, full‑atom PDB export, and oxDNA format.
-- **Itô SDE** – Milstein scheme for the Langevin equation, with Malliavin sensitivity for parameter Greeks.
+- **Itô SDE** – Milstein scheme for the Langevin equation, with Malliavin sensitivity for
+  parameter Greeks.
 - **Simulated Annealing** – optional temperature schedule from 1000 K to 300 K.
 - **Scalable** – chunked O(N) graph building supports >100 000 residues.
 - **Environment‑Adaptive** – works on CPU (3 GB RAM), Colab T4, single GPU, or multi‑GPU (DDP).
 
-### High‑Throughput Mutation Scanner
+### High‑Throughput Mutation Scanner (`real_fold_one_ht.py`)
 
 - **Full Single‑Mutation Scan** – every residue → every allowed monomer.
-- **Targeted Mutation Lists** – provide a JSON list of specific mutations.
+- **Targeted Mutation Lists** – provide a JSON file of specific mutations to evaluate.
 - **Double‑Mutant Epistasis** – random sampling or user‑supplied pairs.
 - **Local Relaxation Window** – fast ΔΔG estimation by relaxing only the mutation site.
-- **Multi‑GPU Parallelism** – `torch.multiprocessing` pool with checkpoint/resume.
-- **Publication‑Ready Plots** – ΔΔG distribution, mutational landscape heatmap, position‑tolerance profile, epistasis distribution, additivity scatter.
+- **Multi‑GPU Parallelism** – `torch.multiprocessing` pool with automatic checkpointing and resume.
+- **Publication‑Ready Plots** – ΔΔG distribution, mutational landscape heatmap, position‑tolerance
+  profile, epistasis distribution, additivity scatter.
 
 ### Training & Validation
 
@@ -224,7 +230,6 @@ import openmm.app as app
 import openmm as mm
 from openmm import unit
 
-# Load refined structure
 pdb = app.PDBFile('refined_full.pdb')
 forcefield = app.ForceField('amber14-all.xml', 'amber14/tip3p.xml')
 system = forcefield.createSystem(pdb.topology, nonbondedMethod=app.PME,
@@ -306,12 +311,50 @@ Flag Description
 
 ---
 
-High‑Throughput Mutation Scanning
+High‑Throughput Mutation Scanning (HT Module)
 
-The real_fold_one_ht.py module performs massive in silico mutagenesis.
+The real_fold_one_ht.py module is the recommended tool for all in silico mutagenesis work.
+It supports both targeted scanning (a user‑supplied list of mutations) and full‑scan
+(all possible single mutations), as well as double‑mutant epistasis analysis.
+
+Targeted vs Full Scan
+
+· Full scan (--scan): evaluates every position × every allowed monomer automatically.
+· Targeted list (--mutlist my_muts.json): evaluates only the mutations specified in a
+  JSON file, saving time and resources when you know which residues are of interest.
+
+Epistasis Analysis
+
+Use --epistasis to perform double‑mutant scanning. Pairs can be supplied explicitly
+(--epipairs pairs.json) or sampled randomly (--max_epi). The module first looks for
+pre‑computed single‑mutation results (via --resume) to calculate additive ΔΔG, then
+computes only the double‑mutant energy, giving you the epistasis value:
+
+```
+ε = ΔΔG_double – (ΔΔG_single1 + ΔΔG_single2)
+```
+
+Workflow: Targeted → Global Optimization
+
+A particularly powerful strategy is to use HT in two sequential steps — first targeted,
+then global — to perform lead optimisation of a protein variant:
 
 ```bash
-# Full single‑mutation scan on a protein
+# Step 1: Targeted scan on residues of known importance
+python real_fold_one_ht.py --pdb wildtype.pdb --mutlist my_targets.json --output step1_out
+
+# Step 2: Take the best variant from Step 1 and run a full scan
+#         to discover additional stabilising mutations on the new energy landscape
+python real_fold_one_ht.py --pdb step1_out/best_variant.pdb --scan --output step2_out
+```
+
+This approach efficiently searches for synergistic (epistatic) interactions without
+exhaustively enumerating all possible double mutants.
+
+Full command‑line options for HT:
+
+```bash
+# Full single‑mutation scan
 python real_fold_one_ht.py --pdb 1abc.pdb --scan --output ht_out
 
 # Scan a DNA sequence (ideal helix generated automatically)
@@ -338,7 +381,7 @@ Input JSON Formats
 Mutation list (--mutlist): [[chain_index, pos_in_chain, new_monomer], ...]
 Epistasis pairs (--epipairs): [[chain1, pos1, chain2, pos2], ...]
 
-Output Files
+Output Files (HT)
 
 File Content
 single_mutations.csv ΔΔG, energies, mutation type
@@ -392,7 +435,8 @@ Outputs:
 
 Validation & Testing
 
-· Gradient check: python real_fold_one.py test verifies analytical gradients against finite differences.
+· Gradient check: python real_fold_one.py test verifies analytical gradients against
+  finite differences.
 · RMSD: the function compute_rmsd() performs Kabsch alignment and returns the RMSD.
 · BV check: for origami, --bv_check verifies the classical master equation.
 
@@ -401,9 +445,11 @@ Validation & Testing
 Performance Tips
 
 · Install torch-cluster for GPU‑accelerated neighbour lists.
-· For large systems (>10 000 residues), increase --rebuild_interval to 200–400 and keep RG enabled.
+· For large systems (>10 000 residues), increase --rebuild_interval to 200–400 and keep
+  RG enabled.
 · Use --full_atom only for final export; during scanning, side‑chains are rebuilt on‑the‑fly.
-· For multi‑GPU scanning, set --num_gpus to the number of available devices and ensure enough VRAM per GPU (≈3 GB for a 500‑residue protein).
+· For multi‑GPU scanning, set --num_gpus to the number of available devices and ensure
+  enough VRAM per GPU (≈3 GB for a 500‑residue protein).
 · On CPU, set OMP_NUM_THREADS to the desired number of cores.
 
 ---
@@ -414,7 +460,7 @@ If you use this software, please cite:
 
 ```
 Yoon A Limsuwan. "REAL FOLD ONE: SOC‑Controlled Universal Refinement Engine."
-Zenodo, 2026. https://doi.org/10.5281/zenodo.20263664
+Zenodo, 2026. DOI: 10.5281/zenodo.XXXXXXX
 ```
 
 ---
@@ -435,6 +481,6 @@ a pull request. For major features, we recommend contacting the author first.
 Contact
 
 Yoon A Limsuwan – GitHub
-Project link: https://github.com/yoonalimsuwan/REAL-FOLD-ONE
+Project link: https://github.com/your-username/real-fold-one
 
 ```
