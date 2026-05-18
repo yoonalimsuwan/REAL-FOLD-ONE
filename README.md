@@ -136,7 +136,7 @@ directly within the refinement workflow.
 Installation
 
 ```bash
-git clone https://github.com/your-username/real-fold-one.git
+git clone https://github.com/yoonalimsuwan/REAL-FOLD-ONE.git
 cd real-fold-one
 
 # Create a fresh environment (optional)
@@ -303,7 +303,7 @@ If you use this software, please cite:
 
 ```
 Yoon A Limsuwan. "REAL FOLD ONE: SOC‑Controlled Universal Refinement Engine."
-Zenodo, 2026. DOI: 10.5281/zenodo.XXXXXXX
+Zenodo, 2026. DOI: https://doi.org/10.5281/zenodo.20257600
 ```
 
 ---
@@ -324,6 +324,4 @@ a pull request. For major features, we recommend contacting the author first.
 Contact
 
 Yoon A Limsuwan – GitHub
-Project link: https://github.com/your-username/real-fold-one
-
-```
+Project link: https://github.com/yoonalimsuwan/REAL-FOLD-ONE
