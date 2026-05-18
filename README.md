@@ -375,7 +375,7 @@ If you use this software, please cite:
 
 ```
 Yoon A Limsuwan. "REAL FOLD ONE: SOC‑Controlled Universal Refinement Engine."
-Zenodo, 2026. DOI: 10.5281/zenodo.XXXXXXX
+Zenodo, 2026.  DOI: 10.5281/zenodo.20263664
 ```
 
 ---
