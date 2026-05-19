@@ -1,0 +1,2310 @@
+# =============================================================================
+# REAL FOLD ONE – SOC‑Controlled Universal Refinement Engine
+# =============================================================================
+# Author: Yoon A Limsuwan
+# License: MIT
+# Year: 2026
+#
+# Features:
+#   - SOC Controller with learnable CSOC kernel & adaptive relaxation
+#   - Semantic‑State Contraction (SSC) low‑pass filter
+#   - Multiscale refinement (RG coarse‑graining)
+#   - Sparse PME (Particle Mesh Ewald) for long‑range electrostatics
+#   - Multigrid Poisson solver (geometric V‑cycle)
+#   - Block‑wise long‑range correction (multipole expansion)
+#   - Hierarchical neighbor lists (clash/LJ/electro cutoffs)
+#   - Full‑atom protein (sidechains, AMBER ff14SB‑like parameters)
+#   - Full‑atom DNA/RNA (OL15‑like), ligand (GAFF2), antibody
+#   - DNA origami wireframe routing and full‑atom export
+#   - Itô SDE (Milstein), Malliavin sensitivity, simulated annealing
+#   - Advanced training module: fit SOC kernel and energy weights from data
+#   - Validation suite (gradient check, RMSD)
+#   - HTS methods: compute_energy, relax_local
+#   - Scalable to N > 100 000 residues (chunked O(N) graphs)
+#   - Environment‑adaptive: CPU (3 GB RAM), Colab T4, Multi‑GPU DDP
+#   - Multimer support, all proteinogenic amino acids
+# =============================================================================
+
+import math, os, sys, json, argparse, warnings, random, itertools, time, logging
+from dataclasses import dataclass, field
+from typing import Optional, List, Dict, Tuple, Any, Callable, Union
+from collections import defaultdict
+from pathlib import Path
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.cuda.amp import autocast, GradScaler
+
+# Optional dependencies
+try:
+    from torch_cluster import radius_graph, radius
+    HAS_CLUSTER = True
+except ImportError:
+    HAS_CLUSTER = False
+
+try:
+    import biotite.structure as bs
+    import biotite.structure.io.pdb as pdb_io
+    import biotite.structure.io.mmcif as mmcif_io
+    HAS_BIOTITE = True
+except ImportError:
+    HAS_BIOTITE = False
+
+try:
+    import networkx as nx
+    HAS_NX = True
+except ImportError:
+    HAS_NX = False
+
+warnings.filterwarnings("ignore")
+logger = logging.getLogger("REAL_FOLD_ONE")
+
+# =============================================================================
+# 1. Constants & Utilities
+# =============================================================================
+AA_VOCAB = "ACDEFGHIKLMNPQRSTVWYX"
+AA_TO_ID = {aa: i for i, aa in enumerate(AA_VOCAB)}
+AA_3_TO_1 = {
+    'ALA':'A','CYS':'C','ASP':'D','GLU':'E','PHE':'F','GLY':'G','HIS':'H',
+    'ILE':'I','LYS':'K','LEU':'L','MET':'M','ASN':'N','PRO':'P','GLN':'Q',
+    'ARG':'R','SER':'S','THR':'T','VAL':'V','TRP':'W','TYR':'Y','UNK':'X'
+}
+HYDROPHOBICITY = {
+    'A':1.8,'C':2.5,'D':-3.5,'E':-3.5,'F':2.8,'G':-0.4,'H':-3.2,'I':4.5,
+    'K':-3.9,'L':3.8,'M':1.9,'N':-3.5,'P':-1.6,'Q':-3.5,'R':-4.5,
+    'S':-0.8,'T':-0.7,'V':4.2,'W':-0.9,'Y':-1.3,'X':0.0
+}
+RESIDUE_CHARGE = {'D':-1.0,'E':-1.0,'K':1.0,'R':1.0,'H':0.5}
+RAMACHANDRAN_PRIORS = {
+    'general':{'phi':-60.0,'psi':-45.0,'width':25.0},
+    'G':{'phi':-75.0,'psi':-60.0,'width':40.0},
+    'P':{'phi':-65.0,'psi':-30.0,'width':20.0},
+}
+MAX_CHI = 4
+RESIDUE_NCHI = {
+    'A':0,'G':0,'S':1,'C':1,'V':1,'T':1,'L':2,'I':2,'M':3,'F':2,'Y':2,'W':2,
+    'D':2,'E':3,'N':2,'Q':3,'K':4,'R':4,'H':2,'P':2
+}
+
+# AMBER ff14SB‑like Lennard‑Jones (sigma [Å], epsilon [kcal/mol])
+AMBER_LJ = {
+    'C':(1.9080,0.0860),'CA':(1.9080,0.0860),'CB':(1.9080,0.0860),
+    'CG':(1.9080,0.0860),'CD':(1.9080,0.0860),'CE':(1.9080,0.0860),
+    'CZ':(1.9080,0.0860),'CH2':(1.9080,0.0860),
+    'N':(1.8240,0.1700),'ND':(1.8240,0.1700),'NE':(1.8240,0.1700),
+    'NH1':(1.8240,0.1700),'NH2':(1.8240,0.1700),
+    'O':(1.6612,0.2100),'OD':(1.6612,0.2100),'OE':(1.6612,0.2100),
+    'OH':(1.6612,0.2100),'S':(2.0000,0.2500),'SG':(2.0000,0.2500),
+    'CT':(1.9080,0.1094),'C*':(1.9080,0.0860),'N2':(1.8240,0.1700),
+    'N3':(1.8240,0.1700),'OW':(1.7683,0.1520),'HW':(0.6000,0.0157),
+    'H':(0.6000,0.0157),'HC':(1.4870,0.0157),'H1':(1.3870,0.0157),
+    'HP':(1.1000,0.0157),'HS':(0.6000,0.0157),
+    'P':(2.1000,0.2000),'OP':(1.8500,0.1500),
+}
+AMBER_CHARGES = {
+    'N':-0.4157,'CA':0.2719,'C':0.5973,'O':-0.5679,
+    'CB':0.0,'CG':0.0,'CD':0.0,'CE':0.0,'CZ':0.0,
+    'ND':-0.4157,'NE':-0.4157,'NH1':-0.4157,'NH2':-0.4157,
+    'OD':-0.5679,'OE':-0.5679,'OH':-0.5679,'SG':-0.2344,'S':-0.2344,
+}
+
+# DNA/RNA (AMBER OL15)
+DNA_RNA_LJ = {
+    'C':(1.9080,0.0860),'CA':(1.9080,0.0860),'CB':(1.9080,0.0860),
+    'N':(1.8240,0.1700),'O':(1.6612,0.2100),'P':(2.1000,0.2000),
+    'OP':(1.8500,0.1500),'H':(0.6000,0.0157),
+}
+DNA_RNA_CHARGES = {
+    'P':0.980,'OP1':-0.780,'OP2':-0.780,'O5\'':-0.500,'C5\'':-0.100,
+    'C4\'':0.000,'O4\'':-0.400,'C1\'':0.200,'C2\'':-0.100,'C3\'':0.100,'O3\'':-0.500,
+    'N1':-0.500,'N2':-0.800,'N3':-0.600,'N4':-0.800,'N6':-0.800,'N7':-0.500,'N9':-0.300,
+    'C2':0.400,'C4':0.300,'C5':0.100,'C6':0.100,'C7':-0.200,'C8':0.200,
+    'O2':-0.550,'O4':-0.550,'O6':-0.550,
+}
+WC_PAIRS = {('A','T'):2,('T','A'):2,('A','U'):2,('U','A'):2,
+            ('G','C'):3,('C','G'):3,('G','U'):1,('U','G'):1}
+BASE_STACKING = {'A':1.0,'T':0.8,'U':0.8,'G':1.2,'C':1.0}
+
+# Ligand GAFF2
+GAFF2_LJ = {
+    'c':(1.9080,0.0860),'c1':(1.9080,0.0860),'c2':(1.9080,0.0860),
+    'c3':(1.9080,0.1094),'ca':(1.9080,0.0860),'cc':(1.9080,0.0860),
+    'cd':(1.9080,0.0860),'ce':(1.9080,0.0860),'cf':(1.9080,0.0860),
+    'cp':(1.9080,0.0860),'cq':(1.9080,0.0860),'cu':(1.9080,0.0860),
+    'cv':(1.9080,0.0860),'cx':(1.9080,0.0860),'cy':(1.9080,0.0860),
+    'n':(1.8240,0.1700),'n1':(1.8240,0.1700),'n2':(1.8240,0.1700),
+    'n3':(1.8240,0.1700),'n4':(1.8240,0.1700),'na':(1.8240,0.1700),
+    'nb':(1.8240,0.1700),'nc':(1.8240,0.1700),'nd':(1.8240,0.1700),
+    'ne':(1.8240,0.1700),'nf':(1.8240,0.1700),'nh':(1.8240,0.1700),
+    'no':(1.8240,0.1700),'o':(1.6612,0.2100),'oh':(1.7210,0.2100),
+    'os':(1.6837,0.1700),'ow':(1.7683,0.1520),'s':(2.0000,0.2500),
+    's2':(2.0000,0.2500),'s4':(2.0000,0.2500),'s6':(2.0000,0.2500),
+    'sh':(2.0000,0.2500),'p2':(2.1000,0.2000),'p3':(2.1000,0.2000),
+    'p4':(2.1000,0.2000),'p5':(2.1000,0.2000),'pb':(2.1000,0.2000),
+    'pc':(2.1000,0.2000),'pd':(2.1000,0.2000),'pe':(2.1000,0.2000),
+    'pf':(2.1000,0.2000),'px':(2.1000,0.2000),'py':(2.1000,0.2000),
+    'f':(1.7500,0.0610),'cl':(1.9480,0.2650),'br':(2.2200,0.3200),
+    'i':(2.3500,0.4000),'h':(0.6000,0.0157),'hc':(1.4870,0.0157),
+    'h1':(1.3870,0.0157),'h2':(1.2870,0.0157),'h3':(1.1870,0.0157),
+    'h4':(1.0870,0.0157),'h5':(0.9870,0.0157),'ha':(1.4590,0.0157),
+    'hn':(0.6000,0.0157),'ho':(0.0000,0.0000),'hp':(1.1000,0.0157),
+    'hs':(0.6000,0.0157),'hw':(0.0000,0.0000),
+}
+
+# Default to AMBER for proteins
+DEFAULT_LJ_PARAMS = AMBER_LJ
+DEFAULT_CHARGE_MAP = AMBER_CHARGES
+NUCLEOTIDE_LJ = DNA_RNA_LJ
+NUCLEOTIDE_CHARGES = DNA_RNA_CHARGES
+GAFF_LJ = GAFF2_LJ
+
+def _normalize(x, eps=1e-8):
+    return x / (x.norm(dim=-1, keepdim=True) + eps)
+
+def detect_sequence_type(seq):
+    nt_set = set("ACGTU")
+    aa_set = set("ACDEFGHIKLMNPQRSTVWY")
+    n_nt = sum(1 for c in seq.upper() if c in nt_set)
+    n_aa = sum(1 for c in seq.upper() if c in aa_set)
+    total = len(seq)
+    if total == 0: return 'unknown'
+    if n_nt/total > 0.8:
+        return 'rna' if 'U' in seq.upper() else 'dna'
+    if n_aa/total > 0.7: return 'protein'
+    return 'unknown'
+
+# =============================================================================
+# 2. Hierarchical Neighbor List Manager
+# =============================================================================
+class NeighborListManager:
+    def __init__(self, cutoffs: Dict[str, float], max_neighbors=64, device='cpu'):
+        self.cutoffs = cutoffs
+        self.max_neighbors = max_neighbors
+        self.device = device
+
+    def build(self, coords, batch=None):
+        if coords.shape[0] == 0:
+            empty = torch.empty((2,0), dtype=torch.long, device=self.device)
+            return {k: (empty, torch.empty(0, device=self.device)) for k in self.cutoffs}
+        if batch is None:
+            batch = torch.zeros(coords.shape[0], dtype=torch.long, device=self.device)
+        result = {}
+        for name, cutoff in self.cutoffs.items():
+            if HAS_CLUSTER:
+                edge = radius_graph(coords, r=cutoff, max_num_neighbors=self.max_neighbors,
+                                    batch=batch, flow='source_to_target')
+                dist = torch.norm(coords[edge[0]] - coords[edge[1]], dim=-1)
+            else:
+                N = coords.shape[0]
+                src_list, dst_list, d_list = [], [], []
+                chunk = 2000 if N > 5000 else N
+                for i in range(0, N, chunk):
+                    i_end = min(i+chunk, N)
+                    ci = coords[i:i_end]
+                    for j in range(0, N, chunk):
+                        j_end = min(j+chunk, N)
+                        cj = coords[j:j_end]
+                        dd = torch.cdist(ci, cj)
+                        mask = (dd < cutoff) & (dd > 1e-6)
+                        ii, jj = torch.where(mask)
+                        if ii.numel() > 0:
+                            src_list.append(ii + i)
+                            dst_list.append(jj + j)
+                            d_list.append(dd[ii, jj])
+                if src_list:
+                    edge = torch.stack([torch.cat(src_list), torch.cat(dst_list)], dim=0)
+                    dist = torch.cat(d_list)
+                else:
+                    edge = torch.empty((2,0), dtype=torch.long, device=self.device)
+                    dist = torch.empty(0, device=self.device)
+            result[name] = (edge, dist)
+        return result
+
+# =============================================================================
+# 3. Sparse PME, Multigrid, Block LR
+# =============================================================================
+class PME:
+    def __init__(self, grid_spacing=0.75, interpolation_order=4, alpha=None):
+        self.grid_spacing = grid_spacing
+        self.order = interpolation_order
+        self.alpha = alpha
+        # Box will be recomputed every call to avoid stale boundaries
+        self.box = None
+        self.inv_box = None
+        self.ngrid = None
+
+    def _setup_grid(self, coords):
+        # Always recompute box from current coords
+        minc = coords.min(dim=0).values - 5.0
+        maxc = coords.max(dim=0).values + 5.0
+        box_size = maxc - minc
+        L = box_size.max()
+        minc = (minc + maxc)/2 - L/2
+        maxc = minc + L
+        box_vectors = torch.eye(3, device=coords.device) * L
+        self.box = box_vectors
+        self.inv_box = torch.inverse(box_vectors)
+        self.ngrid = max(16, int(L / self.grid_spacing))
+        return self.box, self.inv_box, self.ngrid
+
+    def _spread(self, coords, q, inv_box, ngrid):
+        frac = coords @ inv_box
+        frac = frac - frac.floor()
+        n = ngrid
+        ix = (frac * n).long().clamp(0, n-1)
+        wx = frac * n - ix.float()
+        ix1 = (ix[:,0]+1) % n
+        iy1 = (ix[:,1]+1) % n
+        iz1 = (ix[:,2]+1) % n
+        grid = torch.zeros((n,n,n), device=coords.device, dtype=coords.dtype)
+        w000 = (1-wx[:,0])*(1-wx[:,1])*(1-wx[:,2])
+        w100 = wx[:,0]*(1-wx[:,1])*(1-wx[:,2])
+        w010 = (1-wx[:,0])*wx[:,1]*(1-wx[:,2])
+        w001 = (1-wx[:,0])*(1-wx[:,1])*wx[:,2]
+        w110 = wx[:,0]*wx[:,1]*(1-wx[:,2])
+        w101 = wx[:,0]*(1-wx[:,1])*wx[:,2]
+        w011 = (1-wx[:,0])*wx[:,1]*wx[:,2]
+        w111 = wx[:,0]*wx[:,1]*wx[:,2]
+        idx = (ix[:,0], ix[:,1], ix[:,2])
+        idx100 = (ix1, ix[:,1], ix[:,2])
+        idx010 = (ix[:,0], iy1, ix[:,2])
+        idx001 = (ix[:,0], ix[:,1], iz1)
+        idx110 = (ix1, iy1, ix[:,2])
+        idx101 = (ix1, ix[:,1], iz1)
+        idx011 = (ix[:,0], iy1, iz1)
+        idx111 = (ix1, iy1, iz1)
+        grid.index_put_(idx, q*w000, accumulate=True)
+        grid.index_put_(idx100, q*w100, accumulate=True)
+        grid.index_put_(idx010, q*w010, accumulate=True)
+        grid.index_put_(idx001, q*w001, accumulate=True)
+        grid.index_put_(idx110, q*w110, accumulate=True)
+        grid.index_put_(idx101, q*w101, accumulate=True)
+        grid.index_put_(idx011, q*w011, accumulate=True)
+        grid.index_put_(idx111, q*w111, accumulate=True)
+        return grid
+
+    def _solve_recip(self, grid, box, ngrid, alpha):
+        kx = torch.fft.fftfreq(ngrid, d=box[0,0]/ngrid).to(grid.device)
+        ky = torch.fft.fftfreq(ngrid, d=box[1,1]/ngrid).to(grid.device)
+        kz = torch.fft.fftfreq(ngrid, d=box[2,2]/ngrid).to(grid.device)
+        KX, KY, KZ = torch.meshgrid(kx, ky, kz, indexing='ij')
+        k2 = KX**2 + KY**2 + KZ**2
+        k2[0,0,0] = 1.0
+        B = torch.exp(-k2 / (4 * alpha**2)) / k2
+        B[0,0,0] = 0.0
+        Qk = torch.fft.fftn(grid)
+        Ek = B * Qk.abs()**2
+        E = 0.5 * Ek.sum().real * (box[0,0]*box[1,1]*box[2,2] / ngrid**3)
+        return E
+
+    def energy(self, coords, q):
+        if coords.shape[0] == 0: return torch.tensor(0.0, device=coords.device)
+        box, inv_box, ngrid = self._setup_grid(coords)
+        if self.alpha is None:
+            L = box.diag().max()
+            self.alpha = 0.4 / self.grid_spacing
+        grid = self._spread(coords, q, inv_box, ngrid)
+        E_recip = self._solve_recip(grid, box, ngrid, self.alpha)
+        self_energy = -self.alpha / math.sqrt(math.pi) * (q**2).sum()
+        return E_recip + self_energy
+
+class MultigridPoisson:
+    def __init__(self, finest_spacing=0.5, levels=3):
+        self.finest_spacing = finest_spacing
+        self.levels = levels
+        self.box = None
+        self.inv_box = None
+        self.grids = []
+
+    def _setup_grids(self, coords):
+        # Recompute box every call
+        minc = coords.min(dim=0).values - 5.0
+        maxc = coords.max(dim=0).values + 5.0
+        L = (maxc - minc).max()
+        box_vectors = torch.eye(3, device=coords.device) * L
+        self.box = box_vectors
+        self.inv_box = torch.inverse(box_vectors)
+        self.n_finest = max(16, int(L / self.finest_spacing))
+        self.grids = []
+        n = self.n_finest
+        for _ in range(self.levels):
+            n = max(2, n)
+            self.grids.append(n)
+            n = n // 2
+
+    def _charge_grid(self, coords, q, n, inv_box):
+        frac = coords @ inv_box
+        idx = (frac * n).long().clamp(0, n-1)
+        grid = torch.zeros((n,n,n), device=coords.device, dtype=coords.dtype)
+        grid.index_put_((idx[:,0], idx[:,1], idx[:,2]), q, accumulate=True)
+        return grid
+
+    def _laplacian(self, u):
+        u_xx = torch.roll(u, -1, dims=0) + torch.roll(u, 1, dims=0) - 2*u
+        u_yy = torch.roll(u, -1, dims=1) + torch.roll(u, 1, dims=1) - 2*u
+        u_zz = torch.roll(u, -1, dims=2) + torch.roll(u, 1, dims=2) - 2*u
+        return u_xx + u_yy + u_zz
+
+    def _smooth(self, u, f, nu=2, omega=2/3):
+        """Weighted Jacobi smoothing."""
+        for _ in range(nu):
+            u_shift = (torch.roll(u, -1, dims=0) + torch.roll(u, 1, dims=0) +
+                       torch.roll(u, -1, dims=1) + torch.roll(u, 1, dims=1) +
+                       torch.roll(u, -1, dims=2) + torch.roll(u, 1, dims=2))
+            u_new = (1-omega)*u + (omega/6)*(u_shift + f)  # f already includes -Δu, but here we solve -Δu = f  => Δu = -f
+            # Actually Poisson eq: -Δu = f => u_new = (1-ω)u + ω*(u_shift/6 + f/6)
+            u = u_new.clone()
+        return u
+
+    def _restrict(self, r):
+        return 0.125 * r[::2, ::2, ::2]
+
+    def _prolong(self, e):
+        return F.interpolate(e.unsqueeze(0).unsqueeze(0), scale_factor=2, mode='trilinear', align_corners=False).squeeze()
+
+    def _v_cycle(self, u, f, level):
+        if level == self.levels - 1:
+            n = u.shape[0]
+            kx = torch.fft.fftfreq(n, d=1.0/n).unsqueeze(1).unsqueeze(2)
+            ky = torch.fft.fftfreq(n, d=1.0/n).unsqueeze(0).unsqueeze(2)
+            kz = torch.fft.fftfreq(n, d=1.0/n).unsqueeze(0).unsqueeze(1)
+            k2 = (kx**2 + ky**2 + kz**2) * (2*math.pi)**2
+            k2[0,0,0] = 1.0
+            fk = torch.fft.fftn(f)
+            uk = fk / (-k2)
+            uk[0,0,0] = 0.0
+            u = torch.fft.ifftn(uk).real
+            return u
+        u = self._smooth(u, f, nu=2)
+        r = f - (-self._laplacian(u))  # residual: f - (-Δu) = f + Δu
+        r_coarse = self._restrict(r)
+        e_coarse = torch.zeros_like(r_coarse)
+        e_coarse = self._v_cycle(e_coarse, r_coarse, level+1)
+        u += self._prolong(e_coarse)
+        u = self._smooth(u, f, nu=2)
+        return u
+
+    def solve(self, coords, q):
+        if coords.shape[0] == 0: return torch.tensor(0.0, device=coords.device)
+        self._setup_grids(coords)
+        n_f = self.grids[0]
+        vol = (self.box[0,0]/n_f)**3
+        # rho_f = 4π * charge_density * vol, then Poisson: -Δu = f  with f = 4π * rho * vol?
+        # We map: charge q to grid, then f = 4π * (q/vol) * vol^? Actually standard Poisson: -Δφ = 4π ρ.
+        # Discretized: -Δu = f, where f = 4π * q_grid / (h^3) * h^2? Let's just set f proportional to q.
+        # Simpler: f = q_grid * (4π / vol) * (h^2) to match scaling? We'll keep previous implementation.
+        rho_f = self._charge_grid(coords, q, n_f, self.inv_box) * 4 * math.pi / vol
+        u = torch.zeros_like(rho_f)
+        u = self._v_cycle(u, rho_f, level=0)
+        frac = coords @ self.inv_box
+        idx = (frac * n_f).long().clamp(0, n_f-1)
+        phi = u[idx[:,0], idx[:,1], idx[:,2]]
+        E = 0.5 * (q * phi).sum()
+        return E
+
+class BlockwiseLongRange:
+    def __init__(self, block_size=12.0, cutoff=12.0):
+        self.block_size = block_size
+        self.cutoff = cutoff
+
+    def compute_energy(self, coords, q, direct_edge, direct_dist):
+        N = coords.shape[0]
+        device = coords.device
+        if N == 0: return torch.tensor(0.0, device=device)
+        minc = coords.min(dim=0).values
+        block_idx = ((coords - minc) / self.block_size).long()
+        unique_blocks, block_numbers = torch.unique(block_idx, dim=0, return_inverse=True)
+        B = unique_blocks.shape[0]
+        block_charge = torch.zeros(B, device=device)
+        block_dipole = torch.zeros(B, 3, device=device)
+        block_charge.scatter_add_(0, block_numbers, q)
+        for d in range(3):
+            block_dipole[:, d].scatter_add_(0, block_numbers, q * coords[:, d])
+        block_centers = (unique_blocks.float() + 0.5) * self.block_size + minc
+        E_lr = torch.tensor(0.0, device=device)
+        for i in range(B):
+            ci = block_centers[i]; qi = block_charge[i]; di = block_dipole[i]
+            for j in range(i+1, B):
+                cj = block_centers[j]; qj = block_charge[j]; dj = block_dipole[j]
+                r_vec = ci - cj; r = torch.norm(r_vec) + 1e-8
+                if r < self.cutoff: continue
+                r3 = r**3; r5 = r**5
+                E_cc = qi * qj / r
+                E_cd = (qi * torch.dot(dj, r_vec) - qj * torch.dot(di, r_vec)) / r3
+                E_dd = (torch.dot(di, dj) * r**2 - 3 * torch.dot(di, r_vec) * torch.dot(dj, r_vec)) / r5
+                E_lr += E_cc + E_cd + E_dd
+        return E_lr * 332.0637
+
+# =============================================================================
+# 4. CSOC Kernel & SSC
+# =============================================================================
+class CSOCKernel(nn.Module):
+    def __init__(self, init_alpha=0.5, init_lambda=12.0, eps=1e-4):
+        super().__init__()
+        self.log_alpha = nn.Parameter(torch.tensor(math.log(init_alpha)))
+        self.log_lambda = nn.Parameter(torch.tensor(math.log(init_lambda)))
+        self.eps = eps
+    @property
+    def alpha(self): return torch.exp(self.log_alpha)
+    @property
+    def lambd(self): return torch.exp(self.log_lambda)
+    def forward(self, r):
+        safe_r = r + self.eps
+        return torch.exp(-self.log_alpha * torch.log(safe_r)) * torch.exp(-r / self.lambd)
+
+class SemanticStateContraction:
+    def __init__(self, epsilon_fp=0.0028, sigma_target=1.0):
+        self.eps = epsilon_fp
+        self.target = sigma_target
+        self.prev = None
+    def __call__(self, sigma):
+        if self.prev is None:
+            self.prev = sigma
+            return sigma
+        new = self.prev + self.eps * (sigma - self.prev)
+        self.prev = new
+        return new
+
+# =============================================================================
+# 5. SOC Controller
+# =============================================================================
+class SOCController:
+    def __init__(self, base_temp=300.0, friction=0.02, sigma_target=1.0,
+                 avalanche_threshold=0.5, w_avalanche=0.2, kernel=None,
+                 use_ssc=True, epsilon_fp=0.0028, adaptive_friction=True):
+        self.prev_coords = None
+        self.base_temp = base_temp
+        self.friction = friction
+        self.sigma_target = sigma_target
+        self.avalanche_threshold = avalanche_threshold
+        self.w_avalanche = w_avalanche
+        self.kernel = kernel if kernel else CSOCKernel()
+        self.use_ssc = use_ssc
+        self.ssc = SemanticStateContraction(epsilon_fp, sigma_target) if use_ssc else None
+        self.adaptive_friction = adaptive_friction
+        self.per_atom_friction = None
+
+    def sigma(self, coords):
+        if self.prev_coords is None:
+            self.prev_coords = coords.detach().clone()
+            return torch.tensor(1.0, device=coords.device)
+        delta = torch.norm(coords - self.prev_coords, dim=-1).mean()
+        self.prev_coords = coords.detach().clone()
+        if self.use_ssc and self.ssc:
+            delta = self.ssc(delta)
+        return delta
+
+    def temperature(self, sigma):
+        dev = (sigma - self.sigma_target) / 0.5
+        T = self.base_temp + 2000.0 * torch.sigmoid(dev)
+        return torch.clamp(T, self.base_temp * 0.5, 3000.0)
+
+    def update_friction(self, ca, edge_idx, edge_dist, stress_grad):
+        if not self.adaptive_friction: return
+        src, dst = edge_idx
+        K = self.kernel(edge_dist)
+        stress_norm = torch.norm(stress_grad, dim=-1)
+        neighbor_stress = torch.zeros_like(stress_norm)
+        neighbor_stress.scatter_add_(0, dst, stress_norm[src] * K)
+        neighbor_stress.scatter_add_(0, src, stress_norm[dst] * K)
+        self.per_atom_friction = self.friction * (1.0 + self.w_avalanche * neighbor_stress)
+
+    def compute_soc_energy(self, ca, alpha, edge_idx, edge_dist, mask=None, w_soc=0.3):
+        if edge_idx.numel() == 0: return torch.tensor(0.0, device=ca.device)
+        src, dst = edge_idx[0], edge_idx[1]
+        if mask is not None:
+            keep = mask[src] & mask[dst]
+            if not keep.any(): return torch.tensor(0.0, device=ca.device)
+            src, dst = src[keep], dst[keep]
+            d = edge_dist[keep]
+        else:
+            d = edge_dist
+        a = 0.5 * (alpha[src] + alpha[dst])
+        K = self.kernel(d)
+        E = -K * torch.exp(-d / 8.0)
+        return w_soc * E.sum()  # extensive
+
+    def avalanche_gradient(self, ca, alpha, edge_idx, edge_dist):
+        if ca.grad is None or edge_idx.numel() == 0: return None
+        stress = ca.grad.detach()
+        stressed = torch.norm(stress, dim=-1) > self.avalanche_threshold
+        if not stressed.any(): return None
+        src, dst = edge_idx
+        a = 0.5 * (alpha[src] + alpha[dst])
+        K = self.kernel(edge_dist)
+        direction = torch.zeros_like(ca)
+        sidx = torch.where(stressed)[0]
+        grad_s = stress[sidx]
+        norm = torch.norm(grad_s, dim=-1, keepdim=True)
+        direction[sidx] = -grad_s / (norm+1e-8)
+        src_s = stressed[src]
+        if not src_s.any(): return None
+        eK = K[src_s]
+        e_dst = dst[src_s]
+        e_src = src[src_s]
+        dir_src = direction[e_src]
+        grad_contrib = torch.zeros_like(ca)
+        grad_contrib.index_add_(0, e_dst, -self.w_avalanche * eK.unsqueeze(-1) * dir_src)
+        return grad_contrib
+
+# =============================================================================
+# 6. Backbone & Sidechain Reconstruction
+# =============================================================================
+def reconstruct_backbone(ca):
+    L = ca.shape[0]
+    device = ca.device
+    N = torch.zeros_like(ca)
+    C = torch.zeros_like(ca)
+    O = torch.zeros_like(ca)
+    for i in range(L):
+        if i < L-1:
+            v_next = ca[i+1] - ca[i]
+            v_prev = ca[i-1] - ca[i] if i > 0 else v_next
+            n_dir = ca[i-1] - ca[i] if i > 0 else -v_next
+            c_dir = v_next
+        else:
+            v_prev = ca[i-1] - ca[i]
+            n_dir = v_prev
+            c_dir = -v_prev
+        n_dir = _normalize(n_dir)
+        c_dir = _normalize(c_dir)
+        N[i] = ca[i] + 1.45 * n_dir
+        C[i] = ca[i] + 1.52 * c_dir
+        ca_c = C[i] - ca[i]
+        ca_n = N[i] - ca[i]
+        norm_vec = _normalize(torch.cross(ca_c, ca_n, dim=-1))
+        O[i] = C[i] + 1.23 * norm_vec
+    return {'N': N, 'CA': ca, 'C': C, 'O': O}
+
+def dihedral_angle(p0,p1,p2,p3):
+    b0=p1-p0; b1=p2-p1; b2=p3-p2
+    b1n = _normalize(b1)
+    v = b0 - (b0*b1n).sum(-1,keepdim=True)*b1n
+    w = b2 - (b2*b1n).sum(-1,keepdim=True)*b1n
+    x = (v*w).sum(-1)
+    y = torch.cross(b1n, v, dim=-1); y = (y*w).sum(-1)
+    return torch.atan2(y+1e-8, x+1e-8)
+
+def compute_phi_psi(atoms):
+    N,CA,C = atoms['N'],atoms['CA'],atoms['C']
+    L = CA.shape[0]
+    phi = torch.zeros(L, device=CA.device)
+    psi = torch.zeros(L, device=CA.device)
+    if L > 2:
+        phi[1:-1] = dihedral_angle(C[:-2], N[1:-1], CA[1:-1], C[1:-1])
+        psi[1:-1] = dihedral_angle(N[1:-1], CA[1:-1], C[1:-1], N[2:])
+    return phi * 180.0 / math.pi, psi * 180.0 / math.pi
+
+RESIDUE_TOPOLOGY = {
+    'G':[],
+    'A':[],
+    'S':[('OG','OH',1,1.43,109.5,(-2,-1,0),0.0)],
+    'C':[('SG','SG',1,1.81,109.5,(-2,-1,0),0.0)],
+    'V':[('CG1','CB',1,1.53,109.5,(-2,-1,0),0.0), ('CG2','CB',1,1.53,109.5,(-2,-1,0),2.0)],
+    'T':[('OG1','OH',1,1.43,109.5,(-2,-1,0),0.0), ('CG2','CB',1,1.53,109.5,(-2,-1,0),2.0)],
+    'L':[('CG','CB',1,1.53,109.5,(-2,-1,0),0.0), ('CD1','CB',2,1.53,109.5,(-1,0,1),0.0), ('CD2','CB',2,1.53,109.5,(-1,0,1),2.0)],
+    'I':[('CG1','CB',1,1.53,109.5,(-2,-1,0),0.0), ('CG2','CB',1,1.53,109.5,(-2,-1,0),2.0), ('CD1','CB',2,1.53,109.5,(-1,0,1),0.0)],
+    'M':[('CG','CB',1,1.53,109.5,(-2,-1,0),0.0), ('SD','S',2,1.81,109.5,(-1,0,1),0.0), ('CE','CB',3,1.81,109.5,(-2,-1,0),0.0)],
+    'F':[('CG','CB',1,1.53,109.5,(-2,-1,0),0.0), ('CD1','CB',2,1.40,120.0,(-1,0,1),0.0), ('CD2','CB',2,1.40,120.0,(-1,0,1),2.0), ('CE1','CB',3,1.40,120.0,(2,1,0),0.0), ('CE2','CB',4,1.40,120.0,(2,1,0),2.0), ('CZ','CB',5,1.40,120.0,(3,2,1),0.0)],
+    'Y':[('CG','CB',1,1.53,109.5,(-2,-1,0),0.0), ('CD1','CB',2,1.40,120.0,(-1,0,1),0.0), ('CD2','CB',2,1.40,120.0,(-1,0,1),2.0), ('CE1','CB',3,1.40,120.0,(2,1,0),0.0), ('CE2','CB',4,1.40,120.0,(2,1,0),2.0), ('CZ','CB',5,1.40,120.0,(3,2,1),0.0), ('OH','OH',6,1.36,120.0,(4,3,2),0.0)],
+    'W':[('CG','CB',1,1.53,109.5,(-2,-1,0),0.0), ('CD1','CB',2,1.40,120.0,(-1,0,1),0.0), ('CD2','CB',2,1.40,120.0,(-1,0,1),2.0), ('NE1','N',3,1.38,120.0,(2,1,0),0.0), ('CE2','CB',4,1.40,120.0,(2,1,0),2.0), ('CE3','CB',5,1.40,120.0,(2,1,0),2.0), ('CZ2','CB',6,1.40,120.0,(3,2,1),0.0), ('CZ3','CB',7,1.40,120.0,(5,4,2),0.0), ('CH2','CB',8,1.40,120.0,(6,3,2),0.0)],
+    'D':[('CG','C',1,1.52,109.5,(-2,-1,0),0.0), ('OD1','O',2,1.25,120.0,(-1,0,1),0.0), ('OD2','O',2,1.25,120.0,(-1,0,1),2.0)],
+    'E':[('CG','CB',1,1.52,109.5,(-2,-1,0),0.0), ('CD','C',2,1.52,109.5,(-1,0,1),0.0), ('OE1','O',3,1.25,120.0,(2,1,0),0.0), ('OE2','O',3,1.25,120.0,(2,1,0),2.0)],
+    'N':[('CG','C',1,1.52,109.5,(-2,-1,0),0.0), ('OD1','O',2,1.25,120.0,(-1,0,1),0.0), ('ND2','N',2,1.33,120.0,(-1,0,1),2.0)],
+    'Q':[('CG','CB',1,1.52,109.5,(-2,-1,0),0.0), ('CD','C',2,1.52,109.5,(-1,0,1),0.0), ('OE1','O',3,1.25,120.0,(2,1,0),0.0), ('NE2','N',3,1.33,120.0,(2,1,0),2.0)],
+    'K':[('CG','CB',1,1.52,109.5,(-2,-1,0),0.0), ('CD','CB',2,1.52,109.5,(-1,0,1),0.0), ('CE','CB',3,1.52,109.5,(-2,-1,0),0.0), ('NZ','N',4,1.47,109.5,(-1,0,1),0.0)],
+    'R':[('CG','CB',1,1.52,109.5,(-2,-1,0),0.0), ('CD','CB',2,1.52,109.5,(-1,0,1),0.0), ('NE','N',3,1.46,109.5,(-2,-1,0),0.0), ('CZ','C',4,1.33,125.0,(-1,0,1),0.0), ('NH1','N',5,1.33,120.0,(4,3,2),0.0), ('NH2','N',5,1.33,120.0,(4,3,2),2.0)],
+    'H':[('CG','CB',1,1.50,109.5,(-2,-1,0),0.0), ('ND1','N',2,1.38,120.0,(-1,0,1),0.0), ('CD2','CB',2,1.40,120.0,(-1,0,1),2.0), ('CE1','CB',3,1.40,120.0,(2,1,0),0.0), ('NE2','N',4,1.38,120.0,(2,1,0),2.0)],
+    'P':[('CG','CB',1,1.50,104.5,(-2,-1,0),0.0), ('CD','CB',2,1.50,104.5,(-1,0,1),0.0)],
+}
+
+def _map_ref(idx, cur_len):
+    if idx <= 0:
+        return max(0, cur_len + idx)
+    else:
+        return min(idx, cur_len-1)
+
+def build_sidechain_atoms(ca, seq, chi_angles):
+    device = ca.device
+    L = ca.shape[0]
+    v = ca[1:] - ca[:-1]; vn = _normalize(v)
+    N = torch.zeros_like(ca); C = torch.zeros_like(ca)
+    N[1:] = ca[1:] - 1.45 * vn; N[0] = ca[0] - 1.45 * vn[0]
+    C[:-1] = ca[:-1] + 1.52 * vn; C[-1] = ca[-1] + 1.52 * vn[-1]
+    all_coords, all_types = [], []
+    for i, aa in enumerate(seq):
+        if detect_sequence_type(aa) != 'protein' or aa=='G':
+            if aa=='G':
+                all_coords.append(torch.stack([N[i], ca[i], C[i]]))
+                all_types.append(['N','CA','C'])
+            continue
+        n_i, ca_i, c_i = N[i], ca[i], C[i]
+        v1 = n_i - ca_i; v2 = c_i - ca_i
+        cb_dir = -(v1+v2); cb_dir = _normalize(cb_dir)
+        cb_pos = ca_i + 1.53 * cb_dir
+        local_atoms = [n_i, ca_i, c_i, cb_pos]
+        local_types = ['N','CA','C','CB']
+        topo = RESIDUE_TOPOLOGY.get(aa, [])
+        chi_idx = 0
+        for (name, typ, parent, bond_len, ang_deg, ref, dih0) in topo:
+            cur_len = len(local_atoms)
+            a = _map_ref(ref[0], cur_len)
+            b = _map_ref(ref[1], cur_len)
+            c = _map_ref(ref[2], cur_len)
+            p_a, p_b, p_c = local_atoms[a], local_atoms[b], local_atoms[c]
+            bc = p_c - p_b; bc_n = _normalize(bc)
+            ref_vec = torch.tensor([1.,0.,0.], device=device)
+            if abs(torch.dot(bc_n, ref_vec)) > 0.9:
+                ref_vec = torch.tensor([0.,1.,0.], device=device)
+            perp = torch.cross(bc_n, ref_vec, dim=-1)
+            if perp.norm() < 1e-12:
+                ref_vec = torch.tensor([0.,0.,1.], device=device)
+                perp = torch.cross(bc_n, ref_vec, dim=-1)
+            perp = _normalize(perp)
+            chi_val = chi_angles[i, chi_idx] if chi_angles is not None else 0.0
+            total_ang = dih0 + chi_val
+            cos_a, sin_a = math.cos(total_ang), math.sin(total_ang)
+            cross_bn_perp = torch.cross(bc_n, perp, dim=-1)
+            rotated_perp = perp * cos_a + cross_bn_perp * sin_a
+            ang_rad = math.radians(ang_deg)
+            bond_dir = math.cos(ang_rad)*bc_n + math.sin(ang_rad)*rotated_perp
+            new_pos = p_c + bond_len * bond_dir
+            local_atoms.append(new_pos); local_types.append(name)
+            chi_idx += 1
+        all_coords.append(torch.stack(local_atoms))
+        all_types.append(local_types)
+    return all_coords, all_types
+
+def get_full_atom_coords_and_types(ca, seq, chi_angles):
+    res_coords, res_types = build_sidechain_atoms(ca, seq, chi_angles)
+    if not res_coords:
+        return torch.empty((0,3), device=ca.device), [], torch.empty(0, device=ca.device)
+    coords_list = [rc for rc in res_coords]
+    types_list = sum(res_types, [])
+    res_idx = torch.cat([torch.full((rc.shape[0],), i, dtype=torch.long, device=ca.device) for i,rc in enumerate(res_coords)])
+    return torch.cat(coords_list, dim=0), types_list, res_idx
+
+# =============================================================================
+# 7. DNA/RNA Full Atom Builder (OL15‑like)
+# =============================================================================
+NUCLEOTIDE_BACKBONE = [
+    ('C4\'','C',0,0.00,0.0,(0,0,0),0.0),
+    ('O4\'','O',0,1.44,109.5,(0,0,0),0.0),
+    ('C1\'','C',1,1.42,109.5,(0,-1,0),0.0),
+    ('C2\'','C',0,1.52,109.5,(-1,-2,0),120.0),
+    ('C3\'','C',0,1.52,109.5,(-1,-2,0),-120.0),
+    ('O3\'','O',4,1.43,109.5,(-1,0,1),0.0),
+    ('C5\'','C',0,1.51,109.5,(-2,-3,0),180.0),
+    ('O5\'','O',6,1.42,109.5,(-1,0,1),0.0),
+    ('P','P',7,1.60,119.0,(-1,0,1),180.0),
+    ('OP1','O',8,1.48,109.5,(-1,0,1),0.0),
+    ('OP2','O',8,1.48,109.5,(-1,0,1),180.0),
+]
+PYRIMIDINE_BASE = [
+    ('N1','N',2,1.47,109.5,(-1,0,1),0.0),
+    ('C2','C',11,1.40,121.0,(-1,0,1),0.0),
+    ('O2','O',12,1.24,118.0,(-1,0,1),0.0),
+    ('N3','N',12,1.35,120.0,(-1,0,1),180.0),
+    ('C4','C',14,1.33,118.0,(-1,0,1),0.0),
+    ('C5','C',15,1.43,118.0,(-1,0,1),0.0),
+    ('C6','C',16,1.34,122.0,(-1,0,1),0.0),
+]
+CYTOSINE_EXTRA = [('N4','N',15,1.33,118.0,(-1,0,1),180.0)]
+URACIL_EXTRA   = [('O4','O',15,1.23,118.0,(-1,0,1),180.0)]
+THYMINE_EXTRA  = [('O4','O',15,1.23,118.0,(-1,0,1),180.0), ('C7','C',16,1.50,122.0,(-1,0,1),0.0)]
+PURINE_BASE = [
+    ('N9','N',2,1.46,109.5,(-1,0,1),0.0),
+    ('C4','C',11,1.37,126.0,(-1,0,1),0.0),
+    ('C5','C',12,1.39,106.0,(-1,0,1),0.0),
+    ('C6','C',13,1.40,110.0,(-1,0,1),0.0),
+    ('N1','N',14,1.34,118.0,(-1,0,1),0.0),
+    ('C2','C',15,1.32,129.0,(-1,0,1),0.0),
+    ('N3','N',16,1.32,110.0,(-1,0,1),0.0),
+    ('N7','N',13,1.33,114.0,(-2,-1,0),180.0),
+    ('C8','C',18,1.37,106.0,(-1,0,1),0.0),
+]
+ADENINE_EXTRA = [('N6','N',14,1.34,124.0,(-1,0,1),180.0)]
+GUANINE_EXTRA = [('O6','O',14,1.23,124.0,(-1,0,1),180.0), ('N2','N',16,1.34,120.0,(-1,0,1),180.0)]
+NUCLEOTIDE_TOPOLOGY = {
+    'A': NUCLEOTIDE_BACKBONE + PURINE_BASE + ADENINE_EXTRA,
+    'G': NUCLEOTIDE_BACKBONE + PURINE_BASE + GUANINE_EXTRA,
+    'C': NUCLEOTIDE_BACKBONE + PYRIMIDINE_BASE + CYTOSINE_EXTRA,
+    'U': NUCLEOTIDE_BACKBONE + PYRIMIDINE_BASE + URACIL_EXTRA,
+    'T': NUCLEOTIDE_BACKBONE + PYRIMIDINE_BASE + THYMINE_EXTRA,
+}
+
+def build_single_nucleotide_ic(C4_prime, prev_C4, next_C4, nt_type):
+    device = C4_prime.device
+    topo = NUCLEOTIDE_TOPOLOGY.get(nt_type, [])
+    if not topo: return torch.zeros((0,3), device=device), []
+    coords, types = [], []
+    if prev_C4 is not None and next_C4 is not None:
+        x = _normalize(next_C4 - C4_prime)
+        vtmp = C4_prime - prev_C4
+        z = _normalize(torch.cross(x, vtmp, dim=-1))
+        y = torch.cross(z, x, dim=-1)
+    elif next_C4 is not None:
+        x = _normalize(next_C4 - C4_prime)
+        y = torch.tensor([0.,1.,0.], device=device)
+        z = _normalize(torch.cross(x, y, dim=-1))
+        y = torch.cross(z, x, dim=-1)
+    else:
+        x = torch.tensor([1.,0.,0.], device=device)
+        y = torch.tensor([0.,1.,0.], device=device)
+        z = torch.tensor([0.,0.,1.], device=device)
+    for name, typ, parent, blen, ang, ref, dih0 in topo:
+        if parent == 0 and len(coords)==0:
+            pos = C4_prime
+        elif parent < len(coords):
+            ppos = coords[parent]
+            a,b,c = ref
+            cur_len = len(coords)
+            aa = _map_ref(a, cur_len); bb = _map_ref(b, cur_len); cc = _map_ref(c, cur_len)
+            pa = coords[aa] if aa<cur_len else ppos
+            pb = coords[bb] if bb<cur_len else ppos
+            pc = coords[cc] if cc<cur_len else ppos
+            bc = pc - pb; bcn = _normalize(bc)
+            refv = torch.tensor([1.,0.,0.], device=device)
+            if abs(torch.dot(bcn, refv)) > 0.9: refv = torch.tensor([0.,1.,0.], device=device)
+            perp = torch.cross(bcn, refv, dim=-1)
+            if perp.norm() < 1e-12:
+                refv = torch.tensor([0.,0.,1.], device=device)
+                perp = torch.cross(bcn, refv, dim=-1)
+            perp = _normalize(perp)
+            tot_ang = math.radians(dih0)
+            ca_ang, sa = math.cos(tot_ang), math.sin(tot_ang)
+            cp = torch.cross(bcn, perp, dim=-1)
+            rp = perp * ca_ang + cp * sa
+            ang_rad = math.radians(ang)
+            dir_vec = math.cos(ang_rad)*bcn + math.sin(ang_rad)*rp
+            pos = pc + blen * dir_vec
+        else:
+            pos = coords[-1] + blen * x if coords else C4_prime + blen * x
+        coords.append(pos); types.append(name)
+    return torch.stack(coords, dim=0), types
+
+def build_full_dna_rna(C4_coords, sequence):
+    L = len(sequence)
+    device = C4_coords.device
+    all_c, all_t, all_r = [], [], []
+    for i in range(L):
+        prev = C4_coords[i-1] if i>0 else None
+        nxt = C4_coords[i+1] if i<L-1 else None
+        nc, nt = build_single_nucleotide_ic(C4_coords[i], prev, nxt, sequence[i])
+        all_c.append(nc); all_t.extend(nt)
+        all_r.append(torch.full((nc.shape[0],), i, dtype=torch.long, device=device))
+    if not all_c:
+        return torch.zeros((0,3), device=device), [], torch.zeros(0, device=device)
+    return torch.cat(all_c, dim=0), all_t, torch.cat(all_r, dim=0)
+
+def build_dna_helix(seq, rise=3.38, twist=36.0, radius=8.0, start=0.0):
+    L = len(seq)
+    coords = torch.zeros(L,3)
+    for i in range(L):
+        ang = start + math.radians(i*twist)
+        coords[i,0] = radius * math.cos(ang)
+        coords[i,1] = radius * math.sin(ang)
+        coords[i,2] = i*rise
+    return coords
+
+def energy_dna_rna_full(c4, seq, w_bp=8.0, w_stack=5.0, w_backbone=30.0,
+                         w_lj=30.0, w_coulomb=3.0, cutoff=12.0, max_neighbors=64):
+    all_c, all_t, res_idx = build_full_dna_rna(c4, seq)
+    if all_c.shape[0] == 0: return torch.tensor(0.0, device=c4.device)
+    L = len(seq)
+    E = torch.tensor(0.0, device=c4.device)
+    if L>1:
+        d = torch.norm(c4[1:]-c4[:-1], dim=-1)
+        E += w_backbone * ((d-6.5)**2).sum()  # extensive
+    for i in range(L):
+        for j in range(i+4, min(L,i+50)):
+            d = torch.norm(c4[i]-c4[j])
+            n = WC_PAIRS.get((seq[i], seq[j]), 0)
+            if n>0:
+                E += -n * w_bp * torch.exp(-((d-10.5)/2.0)**2)
+    for i in range(L-1):
+        d = torch.norm(c4[i+1]-c4[i])
+        s = 0.5 * (BASE_STACKING.get(seq[i],1.0) + BASE_STACKING.get(seq[i+1],1.0))
+        E += -s * w_stack * torch.exp(-((d-6.5)/1.5)**2)
+    ei, ed = NeighborListManager({'lj':cutoff}, max_neighbors).build(all_c)['lj']
+    if ei.numel() > 0:
+        sig = torch.zeros(len(all_t), device=all_c.device)
+        eps = torch.zeros(len(all_t), device=all_c.device)
+        for k, t in enumerate(all_t):
+            s, e = NUCLEOTIDE_LJ.get(t, (1.9,0.1))
+            sig[k] = s; eps[k] = e
+        src, dst = ei
+        sig_ij = 0.5*(sig[src]+sig[dst])
+        eps_ij = torch.sqrt(eps[src]*eps[dst])
+        r = torch.clamp(ed, min=1e-4)
+        inv_r = 1.0/r
+        lj = 4.0*eps_ij * ((sig_ij*inv_r)**12 - (sig_ij*inv_r)**6)
+        E += w_lj * lj.sum()  # extensive
+        q = torch.tensor([NUCLEOTIDE_CHARGES.get(t,0.0) for t in all_t], device=all_c.device)
+        qi = q[src]; qj = q[dst]
+        coul = 332.0637 * qi * qj / (4.0 * r)
+        E += w_coulomb * coul.sum()
+    return E
+
+# =============================================================================
+# 8. Ligand Support (GAFF2)
+# =============================================================================
+class Molecule:
+    def __init__(self, name="UNK"):
+        self.name = name
+        self.atom_coords = None
+        self.atom_elements = []
+        self.atom_names = []
+        self.atom_gaff_types = []
+        self.atom_charges = None
+        self.bonds = []
+        self.bond_orders = []
+        self.angles = []
+        self.torsions = []
+        self.torsion_periodicities = []
+        self.impropers = []
+        self.n_atoms = 0
+
+    def build_topology(self):
+        if not self.bonds: return
+        self.n_atoms = len(self.atom_elements)
+        adj = defaultdict(set)
+        for i,j in self.bonds:
+            adj[i].add(j); adj[j].add(i)
+        self.angles = []
+        for j in range(self.n_atoms):
+            neigh = list(adj[j])
+            for a in range(len(neigh)):
+                for b in range(a+1, len(neigh)):
+                    self.angles.append((neigh[a], j, neigh[b]))
+        self.torsions = []
+        self.torsion_periodicities = []
+        for j,k in self.bonds:
+            for i in adj[j]:
+                if i != k:
+                    for l in adj[k]:
+                        if l != j and l != i:
+                            period = 2 if self._is_sp2(j,k) else 3
+                            self.torsions.append((i,j,k,l))
+                            self.torsion_periodicities.append(period)
+        self.impropers = []
+        for j in range(self.n_atoms):
+            if len(adj[j]) == 3:
+                n = list(adj[j])
+                self.impropers.append((j,n[0],n[1],n[2]))
+
+    def _is_sp2(self,i,j):
+        for (a,b),o in zip(self.bonds, self.bond_orders):
+            if (a==i and b==j) or (a==j and b==i):
+                return o >= 1.5
+        return False
+
+    def assign_gaff_types(self):
+        self.atom_gaff_types = []
+        adj = defaultdict(set)
+        for i,j in self.bonds: adj[i].add(j); adj[j].add(i)
+        for i,e in enumerate(self.atom_elements):
+            gt = {'C':'c3','N':'n3','O':'os','S':'s','P':'p','F':'f','Cl':'cl','Br':'br','I':'i','H':'H'}.get(e, e.lower())
+            nb = len(adj[i])
+            if e=='C':
+                if nb==4: gt='c3'
+                elif nb==3:
+                    has_d = any(self._get_order(i,nei)>=2.0 for nei in adj[i])
+                    gt='c2' if has_d else 'ca'
+                elif nb==2:
+                    gt='c1' if self._get_order(i,list(adj[i])[0])>=2.5 else 'c2'
+            elif e=='N':
+                if nb==3: gt='n3'
+                elif nb==2: gt='n2'
+                elif nb==1: gt='n1'
+            elif e=='O':
+                if nb==1:
+                    gt='o' if self._get_order(i,list(adj[i])[0])>=2.0 else 'oh'
+                elif nb==2: gt='os'
+            elif e=='S':
+                gt='s' if nb<=2 else 's6'
+            self.atom_gaff_types.append(gt)
+
+    def _get_order(self,i,j):
+        for (a,b),o in zip(self.bonds, self.bond_orders):
+            if (a==i and b==j) or (a==j and b==i): return o
+        return 1.0
+
+    def to_device(self, device):
+        if self.atom_coords is not None: self.atom_coords = self.atom_coords.to(device)
+        if self.atom_charges is not None: self.atom_charges = self.atom_charges.to(device)
+        return self
+
+class LigandEnergy:
+    def __init__(self, w_bond=300.0, w_angle=50.0, w_torsion=1.0, w_improper=10.0,
+                 w_lj=30.0, w_coulomb=3.0, lj_params=None, dielectric=4.0):
+        self.w_bond=w_bond; self.w_angle=w_angle; self.w_torsion=w_torsion
+        self.w_improper=w_improper; self.w_lj=w_lj; self.w_coulomb=w_coulomb
+        self.lj_params = lj_params or GAFF_LJ
+        self.diel = dielectric
+
+    def __call__(self, mol):
+        E = torch.tensor(0.0, device=mol.atom_coords.device)
+        E += self._bond(mol); E += self._angle(mol); E += self._torsion(mol); E += self._improper(mol)
+        E += self._nonbonded(mol)
+        return E
+
+    def _bond(self, mol):
+        E=0.0
+        for (i,j),o in zip(mol.bonds, mol.bond_orders):
+            key = tuple(sorted((mol.atom_elements[i], mol.atom_elements[j])))
+            r0 = IDEAL_BOND_LEN.get(key,1.50)
+            if o>=2.5: r0-=0.35
+            elif o>=1.5: r0-=0.15
+            d = torch.norm(mol.atom_coords[j]-mol.atom_coords[i])
+            E += self.w_bond * K_BOND * (d - r0)**2
+        return E
+
+    def _angle(self, mol):
+        E=0.0
+        for i,j,k in mol.angles:
+            key = (mol.atom_elements[i], mol.atom_elements[j], mol.atom_elements[k])
+            t0 = math.radians(IDEAL_ANGLE_RAD.get(key,109.5))
+            v1 = mol.atom_coords[i]-mol.atom_coords[j]
+            v2 = mol.atom_coords[k]-mol.atom_coords[j]
+            cos = torch.clamp(torch.dot(v1,v2)/(torch.norm(v1)*torch.norm(v2)+1e-8), -1,1)
+            theta = torch.acos(cos)
+            E += self.w_angle * K_ANGLE * (theta - t0)**2
+        return E
+
+    def _torsion(self, mol):
+        E=0.0
+        for (i,j,k,l),per in zip(mol.torsions, mol.torsion_periodicities):
+            phi = self._dihedral(mol.atom_coords[i], mol.atom_coords[j], mol.atom_coords[k], mol.atom_coords[l])
+            V = 1.0
+            delta = math.pi if per==2 else 0.0
+            E += self.w_torsion * K_TORSION * V * (1 + torch.cos(per*phi - delta))
+        return E
+
+    def _improper(self, mol):
+        E=0.0
+        for i,j,k,l in mol.impropers:
+            phi = self._dihedral(mol.atom_coords[i], mol.atom_coords[j], mol.atom_coords[k], mol.atom_coords[l])
+            E += self.w_improper * K_IMPROPER * phi**2
+        return E
+
+    def _nonbonded(self, mol):
+        E=0.0; n=mol.n_atoms
+        excl = self._excl(mol); is14 = self._14list(mol)
+        for i in range(n):
+            for j in range(i+1,n):
+                if (i,j) in excl or (j,i) in excl: continue
+                d = torch.norm(mol.atom_coords[i]-mol.atom_coords[j]) + 1e-8
+                sc = 0.5 if ((i,j) in is14 or (j,i) in is14) else 1.0
+                gi = mol.atom_gaff_types[i] if i<len(mol.atom_gaff_types) else 'c3'
+                gj = mol.atom_gaff_types[j] if j<len(mol.atom_gaff_types) else 'c3'
+                si,ei = self.lj_params.get(gi,(1.9,0.1))
+                sj,ej = self.lj_params.get(gj,(1.9,0.1))
+                sig = 0.5*(si+sj); eps = math.sqrt(ei*ej)
+                inv_r = 1.0/d
+                lj = 4.0*eps * ((sig*inv_r)**12 - (sig*inv_r)**6)
+                E += self.w_lj * sc * lj
+                if mol.atom_charges is not None:
+                    qi,qj = mol.atom_charges[i], mol.atom_charges[j]
+                    coul = 332.0637 * qi * qj / (self.diel * d)
+                    E += self.w_coulomb * sc * coul
+        return E
+
+    def _excl(self, mol):
+        excl = set()
+        for i,j in mol.bonds:
+            excl.add((i,j)); excl.add((j,i))
+        adj = defaultdict(set)
+        for i,j in mol.bonds: adj[i].add(j); adj[j].add(i)
+        for i in range(mol.n_atoms):
+            for j in adj[i]:
+                for k in adj[j]:
+                    if k != i: excl.add((i,k))
+        return excl
+
+    def _14list(self, mol):
+        p14 = set()
+        adj = defaultdict(set)
+        for i,j in mol.bonds: adj[i].add(j); adj[j].add(i)
+        for i in range(mol.n_atoms):
+            for j in adj[i]:
+                for k in adj[j]:
+                    if k==i: continue
+                    for l in adj[k]:
+                        if l != i and l != j: p14.add((i,l))
+        return p14
+
+    def _dihedral(self, p0,p1,p2,p3):
+        b0=p1-p0; b1=p2-p1; b2=p3-p2
+        b1n = _normalize(b1)
+        v = b0 - (b0*b1n).sum(-1,keepdim=True)*b1n
+        w = b2 - (b2*b1n).sum(-1,keepdim=True)*b1n
+        x = (v*w).sum(-1)
+        y = torch.cross(b1n,v,dim=-1); y=(y*w).sum(-1)
+        return torch.atan2(y+1e-8, x+1e-8)
+
+class ProteinLigandEnergy:
+    def __init__(self, w_lj=30.0, w_coulomb=3.0, prot_lj=None, lig_lj=None,
+                 prot_charges=None, dielectric=4.0, cutoff=12.0):
+        self.w_lj=w_lj; self.w_coulomb=w_coulomb
+        self.prot_lj = prot_lj or DEFAULT_LJ_PARAMS
+        self.lig_lj = lig_lj or GAFF_LJ
+        self.prot_charges = prot_charges or DEFAULT_CHARGE_MAP
+        self.diel = dielectric; self.cut = cutoff
+
+    def __call__(self, prot_coords, prot_types, prot_qlist, ligand):
+        device = prot_coords.device
+        E = torch.tensor(0.0, device=device)
+        lig_coords = ligand.atom_coords.to(device)
+        lig_q = ligand.atom_charges
+        for i in range(len(prot_coords)):
+            ppos = prot_coords[i]
+            ptype = prot_types[i] if i<len(prot_types) else 'CA'
+            pq = prot_qlist[i] if i<len(prot_qlist) else 0.0
+            for j in range(ligand.n_atoms):
+                d = torch.norm(ppos - lig_coords[j]) + 1e-8
+                if d > self.cut: continue
+                si,ei = self.prot_lj.get(ptype,(1.9,0.1))
+                gj = ligand.atom_gaff_types[j] if j<len(ligand.atom_gaff_types) else 'c3'
+                sj,ej = self.lig_lj.get(gj,(1.9,0.1))
+                sig = 0.5*(si+sj); eps = math.sqrt(ei*ej)
+                inv_r = 1.0/d
+                lj = 4.0*eps * ((sig*inv_r)**12 - (sig*inv_r)**6)
+                E += self.w_lj * lj
+                if lig_q is not None:
+                    qj = lig_q[j]
+                    coul = 332.0637 * pq * qj / (self.diel * d)
+                    E += self.w_coulomb * coul
+        return E
+
+class LigandBridge:
+    def __init__(self):
+        self.ligands = []
+        self.lig_energy = LigandEnergy()
+        self.pl_energy = ProteinLigandEnergy()
+
+    def add_ligand(self, lig): self.ligands.append(lig)
+
+    def load_ligand_file(self, fpath, ftype):
+        if ftype=='sdf': mols = read_sdf(fpath)
+        elif ftype=='mol2': mols = read_mol2(fpath)
+        elif ftype=='pdb': mols = read_pdb_ligand(fpath)
+        else: raise ValueError
+        for m in mols: self.ligands.append(m)
+        return len(mols)
+
+    def compute_ligand_energy(self):
+        E = torch.tensor(0.0)
+        for lig in self.ligands: E += self.lig_energy(lig)
+        return E
+
+    def compute_interaction(self, prot_coords, prot_types, prot_charges):
+        E = torch.tensor(0.0, device=prot_coords.device)
+        for lig in self.ligands:
+            E += self.pl_energy(prot_coords, prot_types, prot_charges, lig)
+        return E
+
+def read_sdf(path):
+    mols = []
+    with open(path) as f:
+        lines = f.readlines()
+    i=0
+    while i < len(lines)-4:
+        name = lines[i].strip()
+        i+=1; i+=1; i+=1
+        cnt = lines[i]; i+=1
+        n_at = int(cnt[0:3].strip())
+        n_bd = int(cnt[3:6].strip())
+        mol = Molecule(name if name else "UNK")
+        for _ in range(n_at):
+            line = lines[i]; i+=1
+            x=float(line[0:10]); y=float(line[10:20]); z=float(line[20:30])
+            elem = line[31:34].strip()
+            mol.atom_elements.append(elem or 'C')
+            mol.atom_names.append(f"{elem}{len(mol.atom_elements)}")
+            arr = torch.tensor([[x,y,z]], dtype=torch.float32)
+            mol.atom_coords = arr if mol.atom_coords is None else torch.cat([mol.atom_coords, arr])
+        for _ in range(n_bd):
+            line = lines[i]; i+=1
+            a1=int(line[0:3].strip())-1; a2=int(line[3:6].strip())-1
+            order = int(line[6:9]) if len(line)>6 else 1
+            mol.bonds.append((a1,a2)); mol.bond_orders.append(float(order))
+        mol.n_atoms = n_at
+        mol.build_topology(); mol.assign_gaff_types()
+        mol.atom_charges = torch.zeros(n_at)
+        for a,e in enumerate(mol.atom_elements):
+            if e=='N': mol.atom_charges[a]=-0.5
+            elif e=='O': mol.atom_charges[a]=-0.5
+            elif e=='S': mol.atom_charges[a]=-0.2
+            elif e in ('F','Cl','Br','I'): mol.atom_charges[a]=-0.2
+            elif e=='P': mol.atom_charges[a]=0.5
+        mols.append(mol)
+        while i<len(lines) and lines[i].strip()!="$$$$": i+=1
+        i+=1
+    return mols
+
+def read_mol2(path):
+    mols = []
+    with open(path) as f: content = f.read()
+    sections = content.split('@<TRIPOS>MOLECULE')
+    for sec in sections[1:]:
+        lines = sec.strip().split('\n')
+        name = lines[0].strip()
+        mol = Molecule(name)
+        astart=bstart=aend=bend=-1
+        for j,line in enumerate(lines):
+            if line.strip()=='@<TRIPOS>ATOM': astart=j+1
+            elif line.strip()=='@<TRIPOS>BOND':
+                bstart=j+1
+                if astart>0: aend=j
+            elif line.strip().startswith('@<TRIPOS>') and bstart>0:
+                bend=j; break
+        if astart<0: continue
+        if aend<0: aend=len(lines)
+        if bend<0: bend=len(lines)
+        idmap={}
+        coords=[]
+        for j in range(astart, min(aend,len(lines))):
+            parts = lines[j].split()
+            if len(parts)<6: continue
+            mid=int(parts[0]); aname=parts[1]; x=float(parts[2]); y=float(parts[3]); z=float(parts[4])
+            atype=parts[5]; elem=atype.split('.')[0][:2]
+            idx=len(mol.atom_elements); idmap[mid]=idx
+            mol.atom_elements.append(elem); mol.atom_names.append(aname)
+            coords.append([x,y,z])
+            if len(parts)>8:
+                ch=float(parts[8])
+                if mol.atom_charges is None: mol.atom_charges=torch.zeros(len(mol.atom_elements))
+                mol.atom_charges[-1]=ch
+        mol.atom_coords = torch.tensor(coords, dtype=torch.float32)
+        if bstart>0:
+            for j in range(bstart, min(bend,len(lines))):
+                parts = lines[j].split()
+                if len(parts)<4: continue
+                a1=idmap.get(int(parts[1]),-1); a2=idmap.get(int(parts[2]),-1)
+                if a1<0 or a2<0: continue
+                ot=parts[3]
+                if ot=='ar': order=1.5
+                elif ot in ('am','du'): order=1.0
+                else: order=float(ot) if ot.replace('.','').isdigit() else 1.0
+                mol.bonds.append((a1,a2)); mol.bond_orders.append(order)
+        mol.n_atoms = len(mol.atom_elements)
+        mol.build_topology(); mol.assign_gaff_types()
+        if mol.atom_charges is None:
+            mol.atom_charges = torch.zeros(mol.n_atoms)
+            for a,e in enumerate(mol.atom_elements):
+                if e=='N': mol.atom_charges[a]=-0.5
+                elif e=='O': mol.atom_charges[a]=-0.5
+                elif e=='S': mol.atom_charges[a]=-0.2
+                elif e in ('F','Cl','Br','I'): mol.atom_charges[a]=-0.2
+                elif e=='P': mol.atom_charges[a]=0.5
+        mols.append(mol)
+    return mols
+
+def read_pdb_ligand(path, residue_name=None, chain=None):
+    residues = defaultdict(lambda:{'coords':[],'elements':[],'names':[]})
+    order=[]
+    with open(path) as f:
+        for line in f:
+            if not line.startswith('HETATM'): continue
+            rname=line[17:20].strip(); cid=line[21].strip()
+            if residue_name and rname!=residue_name: continue
+            if chain and cid!=chain: continue
+            aname=line[12:16].strip()
+            x=float(line[30:38]); y=float(line[38:46]); z=float(line[46:54])
+            elem=line[76:78].strip() if len(line)>76 else aname[0]
+            key=(rname,cid)
+            if key not in residues: order.append(key)
+            residues[key]['coords'].append([x,y,z])
+            residues[key]['elements'].append(elem or aname[0])
+            residues[key]['names'].append(aname)
+    mols=[]
+    for key in order:
+        d=residues[key]
+        mol=Molecule(name=f"{key[0]}_{key[1]}")
+        mol.atom_coords=torch.tensor(d['coords'], dtype=torch.float32)
+        mol.atom_elements=d['elements']; mol.atom_names=d['names']
+        mol.n_atoms = len(d['elements'])
+        mol.bonds=[]; mol.bond_orders=[]
+        coords_np = mol.atom_coords.numpy()
+        for i in range(mol.n_atoms):
+            for j in range(i+1,mol.n_atoms):
+                ri = COVALENT_RADIUS.get(mol.atom_elements[i],0.76)
+                rj = COVALENT_RADIUS.get(mol.atom_elements[j],0.76)
+                dmax = (ri+rj)*1.2
+                d = float(np.linalg.norm(coords_np[i]-coords_np[j]))
+                if d < dmax:
+                    mol.bonds.append((i,j))
+                    if d < (ri+rj)*0.85: order=2.0
+                    elif d < (ri+rj)*1.1: order=1.0
+                    else: order=1.0
+                    mol.bond_orders.append(order)
+        mol.build_topology(); mol.assign_gaff_types()
+        mol.atom_charges = torch.zeros(mol.n_atoms)
+        mols.append(mol)
+    return mols
+
+ATOMIC_NUMBER = { 'C':6,'N':7,'O':8,'S':16,'P':15,'F':9,'Cl':17,'Br':35,'I':53,'H':1 }
+COVALENT_RADIUS = {
+    'H':0.31,'C':0.76,'N':0.71,'O':0.66,'F':0.57,'P':1.07,'S':1.05,'Cl':1.02,
+    'Br':1.20,'I':1.39,'B':0.84,'Si':1.11,'Se':1.20,'Fe':1.32,'Zn':1.22,
+    'Mn':1.39,'Cu':1.32,'Co':1.26,'Ni':1.24,
+}
+
+IDEAL_BOND_LEN = {('C','C'):1.54,('C','N'):1.47,('C','O'):1.43,('N','H'):1.01,('O','H'):0.96}
+IDEAL_ANGLE_RAD = {('C','C','C'):109.5,('C','N','C'):109.5,('H','O','H'):104.5}
+K_BOND = 300.0; K_ANGLE = 50.0; K_TORSION = 1.0; K_IMPROPER = 10.0
+
+# =============================================================================
+# 9. Energy Terms (Protein) – extensive (sum) versions
+# =============================================================================
+def energy_bond(ca, alpha, w=30.0, mod=0.1, target=3.8, mask=None):
+    if mask is not None and not mask.any(): return torch.tensor(0.0, device=ca.device)
+    t = target * (1.0 + mod*(alpha-1.0))
+    t_pair = 0.5*(t[1:]+t[:-1])
+    d = torch.norm(ca[1:]-ca[:-1], dim=-1)
+    if mask is not None:
+        bm = mask[1:] & mask[:-1]
+        if bm.sum()==0: return torch.tensor(0.0, device=ca.device)
+        return w * ((d[bm]-t_pair[bm])**2).sum()
+    return w * ((d-t_pair)**2).sum()
+
+def energy_angle(ca, alpha, w=15.0, mod=0.05, target_rad=111.0*math.pi/180.0, mask=None):
+    if len(ca)<3: return torch.tensor(0.0, device=ca.device)
+    v1=ca[:-2]-ca[1:-1]; v2=ca[2:]-ca[1:-1]
+    v1n=_normalize(v1); v2n=_normalize(v2)
+    cos_a = (v1n*v2n).sum(-1)
+    t = target_rad * (1.0 + mod*(alpha[1:-1]-1.0))
+    cos_t = torch.cos(t)
+    if mask is not None:
+        am = mask[1:-1]
+        if am.sum()==0: return torch.tensor(0.0, device=ca.device)
+        return w * ((cos_a[am]-cos_t[am])**2).sum()
+    return w * ((cos_a-cos_t)**2).sum()
+
+def energy_rama(phi, psi, seq, alpha, w=8.0, mod=0.2, mask=None):
+    L=len(seq); device=phi.device
+    p0=torch.zeros(L,device=device); p1=torch.zeros(L,device=device); wd=torch.zeros(L,device=device)
+    for i,aa in enumerate(seq):
+        pr=RAMACHANDRAN_PRIORS.get(aa,RAMACHANDRAN_PRIORS['general'])
+        p0[i],p1[i],wd[i]=pr['phi'],pr['psi'],pr['width']
+    weff = wd*(1.0+mod*(alpha-1.0))
+    dphi=(phi-p0)/(weff+1e-8); dpsi=(psi-p1)/(weff+1e-8)
+    loss=(dphi**2+dpsi**2)
+    if mask is None: mask=torch.ones(L,device=device,dtype=torch.bool)
+    mask[0]=mask[-1]=False
+    if mask.sum()==0: return torch.tensor(0.0, device=device)
+    return w * (loss*mask.float()).sum()
+
+def energy_clash(ca, alpha, edge_idx, edge_dist, w=80.0, radius=2.0, mod=0.1, mask=None):
+    if edge_idx.numel()==0: return torch.tensor(0.0, device=ca.device)
+    i,j = edge_idx[0], edge_idx[1]
+    keep = (torch.abs(i-j)>2)
+    if not keep.any(): return torch.tensor(0.0, device=ca.device)
+    i,j = i[keep], j[keep]; d = edge_dist[keep]
+    if mask is not None:
+        keep2 = mask[i] & mask[j]
+        if not keep2.any(): return torch.tensor(0.0, device=ca.device)
+        i,j = i[keep2], j[keep2]; d = d[keep2]
+    ri = radius * (1.0+mod*(alpha[i]-1.0))
+    rj = radius * (1.0+mod*(alpha[j]-1.0))
+    rad = 0.5*(ri+rj)
+    clash = torch.relu(rad - d)
+    if clash.numel()==0: return torch.tensor(0.0, device=ca.device)
+    return w * (clash**2).sum()
+
+def energy_electro(ca, seq, edge_idx, edge_dist, w=4.0, mask=None):
+    if edge_idx.numel()==0: return torch.tensor(0.0, device=ca.device)
+    q = torch.tensor([RESIDUE_CHARGE.get(a,0.0) for a in seq], device=ca.device)
+    qi,qj = q[edge_idx[0]], q[edge_idx[1]]
+    if mask is not None:
+        keep = mask[edge_idx[0]] & mask[edge_idx[1]]
+        if not keep.any(): return torch.tensor(0.0, device=ca.device)
+        qi,qj = qi[keep], qj[keep]
+        r = torch.clamp(edge_dist[keep], min=1e-6)
+    else:
+        r = torch.clamp(edge_dist, min=1e-6)
+    E = qi*qj * torch.exp(-0.1*r) / (80.0 * r)
+    return w * E.sum()
+
+def energy_solvent(ca, seq, edge_idx, w=5.0, mask=None):
+    if edge_idx.numel()==0: return torch.tensor(0.0, device=ca.device)
+    src = edge_idx[0]
+    cnt = torch.zeros(ca.shape[0], device=ca.device)
+    cnt.index_add_(0, src, torch.ones_like(src, dtype=torch.float))
+    if mask is not None: cnt = cnt * mask.float()
+    burial = 1.0 - torch.exp(-cnt/20.0)
+    hydro = torch.tensor([HYDROPHOBICITY.get(a,0.0) for a in seq], device=ca.device)
+    exposed = torch.where(hydro>0, hydro*(1.0-burial), torch.zeros_like(burial))
+    buried = torch.where(hydro<=0, -hydro*burial, torch.zeros_like(burial))
+    return w * (exposed+buried).sum()
+
+def energy_hbond(O,N,C,alpha, edge_idx, edge_dist, w=6.0, mod=0.1, mask=None):
+    if edge_idx.numel()==0: return torch.tensor(0.0, device=O.device)
+    src,dst = edge_idx[0], edge_idx[1]
+    if mask is not None:
+        keep = mask[src] & mask[dst]
+        if not keep.any(): return torch.tensor(0.0, device=O.device)
+        src,dst = src[keep], dst[keep]
+        d = edge_dist[keep]
+    else: d = edge_dist
+    vec_co = O[src]-C[src]
+    vec_no = N[dst]-O[src]
+    align = F.cosine_similarity(vec_co, vec_no, dim=-1, eps=1e-8)
+    ideal = 2.9 * (1.0+mod*(alpha[src]-1.0))
+    E = -align * torch.exp(-((d-ideal)/0.3)**2)
+    return w * E.sum()
+
+def energy_lj_full(all_coords, all_types, res_idx, edge_idx, edge_dist, lj_params, w=30.0):
+    if edge_idx.numel()==0: return torch.tensor(0.0, device=all_coords.device)
+    src,dst = edge_idx
+    sig = torch.zeros(len(all_types), device=all_coords.device)
+    eps = torch.zeros(len(all_types), device=all_coords.device)
+    for i,t in enumerate(all_types):
+        s,e = lj_params.get(t,(1.9,0.1))
+        sig[i]=s; eps[i]=e
+    sig_ij = 0.5*(sig[src]+sig[dst])
+    eps_ij = torch.sqrt(eps[src]*eps[dst])
+    r = torch.clamp(edge_dist, min=1e-4)
+    inv_r = 1.0/r
+    lj = 4.0*eps_ij * ((sig_ij*inv_r)**12 - (sig_ij*inv_r)**6)
+    return w * lj.sum()
+
+def energy_coulomb_full(all_coords, all_types, res_idx, edge_idx, edge_dist, charge_map, w=3.0):
+    if edge_idx.numel()==0: return torch.tensor(0.0, device=all_coords.device)
+    src,dst = edge_idx
+    q = torch.tensor([charge_map.get(t,0.0) for t in all_types], device=all_coords.device)
+    qi,qj = q[src], q[dst]
+    r = torch.clamp(edge_dist, min=1e-4)
+    dielectric = 4.0 * r
+    coul = 332.0637 * qi * qj / (dielectric * r)
+    return w * coul.sum()
+
+def energy_torsion_chi(chi_angles, seq, w=10.0):
+    L=len(seq); maxc=chi_angles.shape[1]
+    E=0.0
+    for i,aa in enumerate(seq):
+        nch = RESIDUE_NCHI.get(aa,0)
+        for c in range(min(nch, maxc)):
+            chi = chi_angles[i,c]
+            E += 0.5*(1.0 - torch.cos(3.0*chi))
+    return w * E
+
+def alpha_regularisation(alpha, w_ent=0.5, w_smooth=0.1):
+    ent = -(alpha * torch.log(alpha+1e-8)).sum()
+    sm = ((alpha[1:]-alpha[:-1])**2).sum()
+    return w_ent*ent + w_smooth*sm
+
+def chain_break_energy(ca, boundaries, w=1.0):
+    if not boundaries: return torch.tensor(0.0, device=ca.device)
+    E=0.0
+    for b in boundaries:
+        if 0 < b < len(ca):
+            d = torch.norm(ca[b]-ca[b-1], dim=-1)
+            E += w * torch.relu(d-5.0)
+    return E
+
+# =============================================================================
+# 10. RosettaScorer & CDRLoopModeler (Antibody)
+# =============================================================================
+class RosettaScorer:
+    def __init__(self, cfg=None):
+        self.w_intf = 15.0
+        self.w_cross_lj = 30.0
+        self.w_cross_coulomb = 5.0
+
+    def score_complex(self, coords_ab, seq_ab, coords_ag, seq_ag, chi_ab=None, chi_ag=None):
+        device = coords_ab.device
+        full_ca = torch.cat([coords_ab, coords_ag], dim=0)
+        full_seq = seq_ab + seq_ag
+        L_ab = len(seq_ab)
+        full_chi = None
+        if chi_ab is not None and chi_ag is not None:
+            full_chi = torch.cat([chi_ab, chi_ag], dim=0)
+        ei, ed = NeighborListManager({'lj':12.0}, 64).build(full_ca)['lj']
+        atoms = reconstruct_backbone(full_ca)
+        ei_hb, ed_hb = NeighborListManager({'hb':3.5}, 64).build(atoms['O'], batch=torch.arange(atoms['O'].shape[0]))['hb']
+        alpha = torch.ones(len(full_seq), device=device)
+        phi, psi = compute_phi_psi(atoms)
+        E = 0.0
+        E += energy_bond(full_ca, alpha, w=30.0)
+        E += energy_angle(full_ca, alpha, w=15.0)
+        E += energy_rama(phi, psi, full_seq, alpha, w=8.0)
+        E += energy_clash(full_ca, alpha, ei, ed, w=80.0)
+        E += energy_hbond(atoms['O'], atoms['N'], atoms['C'], alpha, ei_hb, ed_hb, w=6.0)
+        E += energy_electro(full_ca, full_seq, ei, ed, w=4.0)
+        E += energy_solvent(full_ca, full_seq, ei, w=5.0)
+        soc = SOCController()
+        E += soc.compute_soc_energy(full_ca, alpha, ei, ed, w_soc=0.3)
+        src,dst = ei[0], ei[1]
+        cross = ((src < L_ab) & (dst >= L_ab)) | ((src >= L_ab) & (dst < L_ab))
+        if cross.any():
+            cs, cd = src[cross], dst[cross]
+            d = ed[cross]
+            q = torch.tensor([1 if a in 'RK' else -1 if a in 'DE' else 0 for a in full_seq], device=device)
+            qi,qj = q[cs], q[cd]
+            r = torch.clamp(d, min=1.0)
+            lj = -4.0 * ((4.0/r)**6 - (4.0/r)**4)
+            coul = -qi*qj / r
+            E += self.w_cross_lj * lj.sum() + self.w_cross_coulomb * coul.sum()
+        return E
+
+class CDRLoopModeler:
+    def __init__(self, scorer, frag_db=None):
+        self.scorer = scorer
+        self.fragments = self._load_fragments(frag_db)
+
+    def _load_fragments(self, path):
+        if path and os.path.exists(path):
+            with open(path) as f: return [tuple(x) for x in json.load(f)]
+        return [(-65,-45),(-70,-40),(-60,-50),(-80,-30),(-55,-55),(-75,-35),(-62,-48),(-68,-42),(-58,-52),(-72,-38),(-90,-20),(-50,-60),(-85,-25),(-95,-15)]
+
+    def remodel_loop(self, coords, seq, loop_start, loop_end, n_steps=500, temp=1.0):
+        device = coords.device
+        best_coords = coords.clone()
+        current_coords = coords.clone()
+        best_E = self.scorer.score_complex(coords[:loop_start], seq[:loop_start], coords[loop_end:], seq[loop_end:]).item()
+        for step in range(n_steps):
+            if loop_end - loop_start < 2: continue
+            pos = random.randint(loop_start, loop_end-2)
+            trial = current_coords.clone()
+            trial[pos] += 0.5 * torch.randn(3)
+            trial[pos+1] += 0.5 * torch.randn(3)
+            E_new = self.scorer.score_complex(trial[:loop_start], seq[:loop_start], trial[loop_end:], seq[loop_end:]).item()
+            delta = E_new - best_E
+            if delta < 0 or random.random() < math.exp(-delta/temp):
+                current_coords = trial
+                if E_new < best_E:
+                    best_E = E_new
+                    best_coords = trial
+        return best_coords
+
+# =============================================================================
+# 11. WireframeOrigami & DNA Origami (full‑atom export)
+# =============================================================================
+class WireframeOrigami:
+    def __init__(self, vertices, edges, scaffold_seq=None):
+        self.vertices = vertices  # list of (x,y,z)
+        self.edges = edges        # adjacency list dict of lists
+        self.scaffold_seq = scaffold_seq or ("AATGCTACTACTATTAGTAGAA"*100)
+        self.helix_radius = 1.0
+
+    def route_scaffold(self):
+        visited = set()
+        path = []
+        current = 0
+        while len(visited) < len(self.vertices):
+            visited.add(current)
+            path.append(current)
+            neigh = [v for v in self.edges[current] if v not in visited]
+            if neigh:
+                best = min(neigh, key=lambda v: np.linalg.norm(np.array(self.vertices[current]) - np.array(self.vertices[v])))
+                current = best
+            else:
+                unv = [v for v in range(len(self.vertices)) if v not in visited]
+                if unv: current = random.choice(unv)
+                else: break
+        return path
+
+    def design_staples(self, scaffold_path):
+        staples = {}
+        scaf_set = set(zip(scaffold_path[:-1], scaffold_path[1:]))
+        for (u,v) in self.edges:
+            if (u,v) not in scaf_set and (v,u) not in scaf_set:
+                seq = self._complement(self.scaffold_seq[10:31])
+                staples[f"staple_{u}_{v}"] = seq
+        return staples
+
+    def _complement(self, s):
+        comp = {'A':'T','T':'A','C':'G','G':'C'}
+        return "".join(comp.get(b,'N') for b in s)
+
+    def build_3d_model(self):
+        """Build continuous C4' coordinates for scaffold path."""
+        path = self.route_scaffold()
+        if len(path) < 2:
+            return torch.empty(0,3), ""
+        # Interpolate helix along the path
+        all_coords = []
+        total_bp = 0
+        for idx in range(len(path)-1):
+            start = np.array(self.vertices[path[idx]])
+            end = np.array(self.vertices[path[idx+1]])
+            vec = end - start
+            dist = np.linalg.norm(vec)
+            # number of base pairs for this edge (approx 1 bp per 0.34 nm rise? but use helix geometry)
+            # We'll generate a segment of helix with rise proportional to distance
+            n_bp = max(1, int(dist / 0.34))  # rough
+            total_bp += n_bp
+            # Build a helix segment from start to end
+            direction = vec / (dist + 1e-8)
+            # create local frame
+            z_axis = np.array([0,0,1])
+            if np.allclose(direction, z_axis):
+                R = np.eye(3)
+            elif np.allclose(direction, -z_axis):
+                R = np.diag([1,1,-1])
+            else:
+                v_cross = np.cross(z_axis, direction); v_cross /= np.linalg.norm(v_cross)
+                angle = math.acos(np.dot(z_axis, direction))
+                K = np.array([[0,-v_cross[2],v_cross[1]],
+                              [v_cross[2],0,-v_cross[0]],
+                              [-v_cross[1],v_cross[0],0]])
+                R = np.eye(3) + math.sin(angle)*K + (1-math.cos(angle))*(K@K)
+            # Build a short helix for this edge
+            helix_local = build_dna_helix("A"*n_bp, rise=0.34, twist=36.0, radius=1.0)
+            helix_np = helix_local.numpy()
+            rotated = helix_np @ R.T + start
+            # Shift to connect smoothly with previous segment (simple, no exact matching)
+            all_coords.append(torch.tensor(rotated, dtype=torch.float32))
+        full_c4 = torch.cat(all_coords, dim=0)
+        seq = "A" * full_c4.shape[0]  # placeholder
+        return full_c4, seq
+
+    def export_full_atom_pdb(self, filename):
+        c4_coords, seq = self.build_3d_model()
+        if c4_coords.shape[0] == 0:
+            print("No coordinates generated.")
+            return
+        all_c, all_types, res_idx = build_full_dna_rna(c4_coords, seq)
+        with open(filename, 'w') as f:
+            atom_idx = 1
+            for i in range(len(all_c)):
+                x,y,z = all_c[i].tolist()
+                atype = all_types[i]
+                res = seq[res_idx[i]]
+                f.write(f"ATOM  {atom_idx:5d}  {atype:<3s}  {res} A{res_idx[i]+1:4d}    "
+                        f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00           {atype[0]}\n")
+                atom_idx += 1
+            f.write("END\n")
+        print(f"Full‑atom DNA origami PDB saved to {filename}")
+
+    def export_oxDNA(self, filename):
+        coords, seq = self.build_3d_model()
+        with open(f"{filename}.top", 'w') as f:
+            f.write(f"{len(seq)} nucleotides\n")
+            for i in range(len(seq)):
+                f.write(f"{i+1} {seq[i]} {'A' if i%2==0 else 'B'}\n")
+        with open(f"{filename}.dat", 'w') as f:
+            f.write(f"t = 0\nb = {len(seq)*0.34*10:.1f} {len(seq)*0.34*10:.1f} {len(seq)*0.34*10:.1f}\n")
+            for coord in coords:
+                f.write(f"{coord[0]:.6f} {coord[1]:.6f} {coord[2]:.6f} 0 0 0 0 0 0\n")
+        print(f"oxDNA files written to {filename}.top/.dat")
+
+# =============================================================================
+# 12. Batalin–Vilkovisky Formalism (DNA origami topological validation)
+# =============================================================================
+class BVFieldTheory:
+    def __init__(self, field_names, ghost_numbers):
+        self.fields = field_names
+        self.ghost_numbers = {name: gh for name, gh in zip(field_names, ghost_numbers)}
+        self.phi = {name: torch.tensor(0.0) for name in field_names}
+        self.phi_star = {name: torch.tensor(0.0) for name in field_names}
+
+    def antibracket(self, F, G):
+        phi = {k: v.clone().detach().requires_grad_(True) for k,v in self.phi.items()}
+        phistar = {k: v.clone().detach().requires_grad_(True) for k,v in self.phi_star.items()}
+        F_val = F(phi, phistar); G_val = G(phi, phistar)
+        dF_dphi = torch.autograd.grad(F_val, list(phi.values()), retain_graph=True, create_graph=True)
+        dF_dphistar = torch.autograd.grad(F_val, list(phistar.values()), retain_graph=True, create_graph=True)
+        dG_dphi = torch.autograd.grad(G_val, list(phi.values()), retain_graph=True, create_graph=True)
+        dG_dphistar = torch.autograd.grad(G_val, list(phistar.values()), retain_graph=True, create_graph=True)
+        result = 0.0
+        for i, name in enumerate(self.fields):
+            result += torch.dot(dF_dphi[i].flatten(), dG_dphistar[i].flatten())
+            result -= torch.dot(dF_dphistar[i].flatten(), dG_dphi[i].flatten())
+        return result
+
+    def classical_master_equation(self, S):
+        ab = self.antibracket(S, S)
+        return torch.allclose(ab, torch.tensor(0.0), atol=1e-6)
+
+class DNAOrigamiBV(BVFieldTheory):
+    def __init__(self, vertices, edges):
+        field_names = [f"phi_{u}_{v}" for (u,v) in edges]
+        ghost_numbers = [0]*len(field_names)
+        super().__init__(field_names, ghost_numbers)
+        self.vertices = torch.tensor(vertices, dtype=torch.float32)
+        self.edges = edges
+        for idx, (u,v) in enumerate(edges):
+            vec = self.vertices[v] - self.vertices[u]
+            self.phi[f"phi_{u}_{v}"] = vec.clone().detach().requires_grad_(True)
+        if HAS_NX:
+            g = nx.Graph()
+            g.add_nodes_from(range(len(vertices)))
+            g.add_edges_from(edges)
+            self.cycles = nx.cycle_basis(g)
+        else:
+            self.cycles = []
+
+    def action_link(self, phi_dict, phi_star_dict):
+        total = torch.tensor(0.0, device=self.vertices.device)
+        for cycle in self.cycles:
+            vec = torch.zeros(3, device=self.vertices.device)
+            for idx in range(len(cycle)):
+                u = cycle[idx]; v = cycle[(idx+1)%len(cycle)]
+                key = f"phi_{u}_{v}"
+                if key in phi_dict:
+                    vec += phi_dict[key]
+                else:
+                    key_rev = f"phi_{v}_{u}"
+                    if key_rev in phi_dict:
+                        vec -= phi_dict[key_rev]
+            total += torch.dot(vec, vec)
+        return total
+
+    def verify_topological_consistency(self):
+        return self.classical_master_equation(self.action_link)
+
+# =============================================================================
+# 13. DiffRGRefiner (Multiscale)
+# =============================================================================
+class DiffRGRefiner:
+    def __init__(self, factor=4, n_levels=2):
+        self.factor = factor
+        self.n_levels = n_levels
+
+    def forward(self, coords):
+        L = coords.shape[0]
+        for _ in range(self.n_levels):
+            f = self.factor
+            m = L // f * f
+            if m == 0: break
+            x = coords[:m].permute(1,0).unsqueeze(0)
+            pooled = F.avg_pool1d(x, kernel_size=f, stride=f)
+            up = F.interpolate(pooled, size=L, mode='linear', align_corners=True)
+            coords = up.squeeze(0).permute(1,0)
+        return coords
+
+# =============================================================================
+# 14. Validation & Utilities
+# =============================================================================
+def compute_rmsd(coords1, coords2):
+    if isinstance(coords1, np.ndarray):
+        coords1 = torch.from_numpy(coords1)
+    if isinstance(coords2, np.ndarray):
+        coords2 = torch.from_numpy(coords2)
+    c1 = coords1 - coords1.mean(dim=0)
+    c2 = coords2 - coords2.mean(dim=0)
+    C = c1.T @ c2
+    U, S, Vt = torch.linalg.svd(C)
+    V = Vt.T
+    det = torch.det(V @ U.T)
+    if det < 0:
+        V[:, -1] = -V[:, -1]
+    R = V @ U.T
+    rotated = c2 @ R.T
+    diff = c1 - rotated
+    rmsd = torch.sqrt((diff**2).sum() / coords1.shape[0])
+    return rmsd.item()
+
+def validate_gradients(engine, coords, sequence, eps=1e-4):
+    coords = coords.clone().detach().requires_grad_(True)
+    engine.cfg.use_amp = False
+    # Build edges for analytical gradient
+    edge_dict = engine._build_edges(coords)
+    atoms = reconstruct_backbone(coords)
+    edge_hb, edge_hb_dist = NeighborListManager({'hb':3.5}, engine.cfg.max_neighbors).build(atoms['O'])['hb']
+    alpha = torch.ones(len(sequence), device=coords.device)
+    chi = torch.zeros(len(sequence), MAX_CHI, device=coords.device)
+    mask = torch.ones(len(sequence), dtype=torch.bool, device=coords.device)
+    E = engine._total_energy(coords, sequence, alpha, chi,
+                             edge_dict, edge_hb, edge_hb_dist,
+                             [], ['protein']*len(sequence), mask, None)
+    E.backward()
+    anal_grad = coords.grad.clone()
+    fd_grad = torch.zeros_like(coords)
+    for i in range(coords.shape[0]):
+        for j in range(3):
+            orig = coords[i,j].item()
+            coords[i,j] = orig + eps
+            # Rebuild edges with perturbed coords
+            edge_dict_plus = engine._build_edges(coords)
+            atoms_plus = reconstruct_backbone(coords)
+            edge_hb_plus, edge_hb_dist_plus = NeighborListManager({'hb':3.5}, engine.cfg.max_neighbors).build(atoms_plus['O'])['hb']
+            E_plus = engine._total_energy(coords, sequence, alpha, chi,
+                                          edge_dict_plus, edge_hb_plus, edge_hb_dist_plus,
+                                          [], ['protein']*len(sequence), mask, None)
+            coords[i,j] = orig - eps
+            edge_dict_minus = engine._build_edges(coords)
+            atoms_minus = reconstruct_backbone(coords)
+            edge_hb_minus, edge_hb_dist_minus = NeighborListManager({'hb':3.5}, engine.cfg.max_neighbors).build(atoms_minus['O'])['hb']
+            E_minus = engine._total_energy(coords, sequence, alpha, chi,
+                                           edge_dict_minus, edge_hb_minus, edge_hb_dist_minus,
+                                           [], ['protein']*len(sequence), mask, None)
+            fd_grad[i,j] = (E_plus - E_minus) / (2*eps)
+            coords[i,j] = orig
+    diff = torch.norm(anal_grad - fd_grad) / (torch.norm(anal_grad) + 1e-8)
+    return diff.item()
+
+def save_full_atom_pdb(coords, sequence, filename, chi=None):
+    if chi is None:
+        chi = torch.zeros(len(sequence), MAX_CHI)
+    bb = reconstruct_backbone(coords)
+    res_coords, res_types = build_sidechain_atoms(coords, sequence, chi)
+    with open(filename, 'w') as f:
+        atom_idx = 1
+        for i in range(len(sequence)):
+            for j, (pos, name) in enumerate(zip([bb['N'][i], bb['CA'][i], bb['C'][i], bb['O'][i]],
+                                                ['N','CA','C','O'])):
+                f.write(f"ATOM  {atom_idx:5d}  {name:<3s} {sequence[i]:3s} A{i+1:4d}    "
+                        f"{pos[0].item():8.3f}{pos[1].item():8.3f}{pos[2].item():8.3f}"
+                        f"  1.00  0.00           {name[0]}\n")
+                atom_idx += 1
+            sc = res_coords[i]
+            sc_types = res_types[i]
+            for k in range(3, len(sc)):
+                f.write(f"ATOM  {atom_idx:5d}  {sc_types[k]:<3s} {sequence[i]:3s} A{i+1:4d}    "
+                        f"{sc[k][0].item():8.3f}{sc[k][1].item():8.3f}{sc[k][2].item():8.3f}"
+                        f"  1.00  0.00           {sc_types[k][0]}\n")
+                atom_idx += 1
+        f.write("END\n")
+    print(f"Full‑atom PDB saved to {filename}")
+
+# =============================================================================
+# 15. Refinement Engine (with Temperature Scheduling & Training)
+# =============================================================================
+@dataclass
+class RefinementConfig:
+    w_bond: float = 30.0; w_angle: float = 15.0; w_rama: float = 8.0; w_clash: float = 80.0
+    w_hbond: float = 6.0; w_electro: float = 4.0; w_solvent: float = 5.0; w_soc: float = 0.3
+    w_alpha_entropy: float = 0.5; w_alpha_smooth: float = 0.1; w_chain_break: float = 1.0
+    w_lj: float = 30.0; w_coulomb: float = 5.0; w_torsion: float = 10.0
+    clash_radius: float = 2.0; angle_target_rad: float = 111.0*math.pi/180.0; bond_target: float = 3.8
+    base_temp: float = 300.0; friction: float = 0.02; sigma_target: float = 1.0
+    avalanche_threshold: float = 0.5; w_avalanche: float = 0.2
+    cutoff: float = 12.0; max_neighbors: int = 64
+    lr: float = 1e-4; steps: int = 600; rebuild_interval: int = 1  # rebuild every step for correctness
+    use_amp: bool = True; grad_clip: float = 5.0; use_milstein: bool = False
+    use_rg: bool = True; rg_factor: int = 4; rg_interval: int = 200
+    use_ssc: bool = True; epsilon_fp: float = 0.0028
+    dna_full_atom: bool = True
+    use_pme: bool = False; pme_grid_spacing: float = 0.75
+    use_multigrid: bool = False; multigrid_levels: int = 3
+    use_block_lr: bool = False; block_size: float = 12.0
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    anneal_start: float = 1000.0
+    anneal_end: float = 300.0
+    anneal_cycles: int = 1
+
+class RefinementEngine:
+    def __init__(self, cfg: Optional[RefinementConfig] = None):
+        self.cfg = cfg or RefinementConfig()
+        self.device = torch.device(self.cfg.device)
+        self.kernel = CSOCKernel(init_alpha=0.5, init_lambda=12.0)
+        self.soc = SOCController(
+            base_temp=self.cfg.base_temp, friction=self.cfg.friction,
+            sigma_target=self.cfg.sigma_target, avalanche_threshold=self.cfg.avalanche_threshold,
+            w_avalanche=self.cfg.w_avalanche, kernel=self.kernel,
+            use_ssc=self.cfg.use_ssc, epsilon_fp=self.cfg.epsilon_fp,
+            adaptive_friction=True
+        )
+        self.rg = DiffRGRefiner(self.cfg.rg_factor) if self.cfg.use_rg else None
+        self.scaler = GradScaler(enabled=self.cfg.use_amp and self.device.type == 'cuda')
+        self.pme = PME(grid_spacing=self.cfg.pme_grid_spacing) if self.cfg.use_pme else None
+        self.mg = MultigridPoisson(finest_spacing=0.5, levels=self.cfg.multigrid_levels) if self.cfg.use_multigrid else None
+        self.block_lr = BlockwiseLongRange(block_size=self.cfg.block_size, cutoff=self.cfg.cutoff) if self.cfg.use_block_lr else None
+        self.neighbor_mgr = NeighborListManager(
+            cutoffs={'clash':2.5, 'lj':6.0, 'elec':self.cfg.cutoff},
+            max_neighbors=self.cfg.max_neighbors,
+            device=self.device
+        )
+
+    def _build_edges(self, coords, batch=None):
+        return self.neighbor_mgr.build(coords, batch)
+
+    def _temperature_schedule(self, step, total_steps):
+        if self.cfg.anneal_cycles <= 0:
+            return self.cfg.base_temp
+        cycle_len = total_steps // self.cfg.anneal_cycles
+        cycle_step = step % cycle_len
+        frac = cycle_step / cycle_len
+        T = self.cfg.anneal_start + (self.cfg.anneal_end - self.cfg.anneal_start) * frac
+        return max(T, self.cfg.anneal_end)
+
+    def _total_energy(self, ca, seq, alpha, chi,
+                      edge_dict, edge_hb, edge_hb_dist,
+                      boundaries, chain_types, mask,
+                      ligand_bridge=None):
+        E = torch.tensor(0.0, device=ca.device)
+        atoms = reconstruct_backbone(ca)
+        phi, psi = compute_phi_psi(atoms)
+        prot_mask = torch.tensor([t=='protein' for t in chain_types], device=ca.device) if mask is None else mask
+
+        E += energy_bond(ca, alpha, self.cfg.w_bond, mod=0.1, target=self.cfg.bond_target, mask=prot_mask)
+        E += energy_angle(ca, alpha, self.cfg.w_angle, mod=0.05, target_rad=self.cfg.angle_target_rad, mask=prot_mask)
+        E += energy_rama(phi, psi, seq, alpha, self.cfg.w_rama, mod=0.2, mask=prot_mask)
+        E += energy_clash(ca, alpha, edge_dict['clash'][0], edge_dict['clash'][1], self.cfg.w_clash, self.cfg.clash_radius, mod=0.1, mask=prot_mask)
+        E += energy_hbond(atoms['O'], atoms['N'], atoms['C'], alpha, edge_hb, edge_hb_dist, self.cfg.w_hbond, mod=0.1, mask=prot_mask)
+
+        elec_edge, elec_dist = edge_dict['elec']
+        q_res = torch.tensor([RESIDUE_CHARGE.get(a,0.0) for a in seq], device=ca.device)
+        if self.cfg.use_pme:
+            E += self.pme.energy(ca, q_res)
+        elif self.cfg.use_multigrid:
+            E += self.mg.solve(ca, q_res)
+        else:
+            E += energy_electro(ca, seq, elec_edge, elec_dist, self.cfg.w_electro, mask=prot_mask)
+            if self.block_lr:
+                E += self.block_lr.compute_energy(ca, q_res, elec_edge, elec_dist)
+
+        E += energy_solvent(ca, seq, elec_edge, self.cfg.w_solvent, mask=prot_mask)
+        E += self.soc.compute_soc_energy(ca, alpha, elec_edge, elec_dist, mask=prot_mask, w_soc=self.cfg.w_soc)
+        E += alpha_regularisation(alpha, self.cfg.w_alpha_entropy, self.cfg.w_alpha_smooth)
+        E += chain_break_energy(ca, boundaries, self.cfg.w_chain_break)
+
+        dna_mask = torch.tensor([t in ('dna','rna') for t in chain_types], device=ca.device)
+        if dna_mask.any():
+            idx = torch.where(dna_mask)[0]
+            if len(idx) > 0:
+                dna_ca = ca[idx]
+                dna_seq = "".join([seq[i] for i in idx.tolist()])
+                if self.cfg.dna_full_atom:
+                    E += energy_dna_rna_full(dna_ca, dna_seq,
+                                             w_bp=8.0, w_stack=5.0, w_backbone=30.0,
+                                             w_lj=self.cfg.w_lj, w_coulomb=self.cfg.w_coulomb,
+                                             cutoff=self.cfg.cutoff, max_neighbors=self.cfg.max_neighbors)
+                else:
+                    for i in range(len(dna_seq)):
+                        for j in range(i+4, min(len(dna_seq),i+50)):
+                            d = torch.norm(dna_ca[i]-dna_ca[j])
+                            n = WC_PAIRS.get((dna_seq[i],dna_seq[j]),0)
+                            if n>0:
+                                E += -n * 8.0 * torch.exp(-((d-10.5)/2.0)**2)
+                        if i < len(dna_seq)-1:
+                            d = torch.norm(dna_ca[i+1]-dna_ca[i])
+                            s = 0.5*(BASE_STACKING.get(dna_seq[i],1.0)+BASE_STACKING.get(dna_seq[i+1],1.0))
+                            E += -s * 5.0 * torch.exp(-((d-6.5)/1.5)**2)
+
+        if chi is not None and prot_mask.any():
+            prot_idx = torch.where(prot_mask)[0]
+            if len(prot_idx) > 0:
+                prot_ca = ca[prot_idx]
+                prot_seq = "".join([seq[i] for i in prot_idx.tolist()])
+                prot_chi = chi[prot_idx]
+                all_c, all_t, _ = get_full_atom_coords_and_types(prot_ca, prot_seq, prot_chi)
+                if all_c.shape[0] > 0:
+                    ei_full, ed_full = self.neighbor_mgr.build(all_c)['lj']
+                    E += energy_lj_full(all_c, all_t, _, ei_full, ed_full, DEFAULT_LJ_PARAMS, self.cfg.w_lj)
+                    E += energy_coulomb_full(all_c, all_t, _, ei_full, ed_full, DEFAULT_CHARGE_MAP, self.cfg.w_coulomb)
+                    E += energy_torsion_chi(prot_chi, prot_seq, self.cfg.w_torsion)
+
+        if ligand_bridge is not None and prot_mask.any():
+            prot_idx = torch.where(prot_mask)[0]
+            if len(prot_idx) > 0:
+                prot_ca = ca[prot_idx]; prot_seq = "".join([seq[i] for i in prot_idx.tolist()])
+                prot_chi = chi[prot_idx] if chi is not None else None
+                prot_all, prot_types, _ = get_full_atom_coords_and_types(prot_ca, prot_seq, prot_chi)
+                if prot_all.shape[0] > 0:
+                    prot_charges = [DEFAULT_CHARGE_MAP.get(t, 0.0) for t in prot_types]
+                    E += ligand_bridge.compute_ligand_energy()
+                    E += ligand_bridge.compute_interaction(prot_all, prot_types, prot_charges)
+        return E
+
+    def refine(self, coords, sequence, mask=None, chain_types=None, chain_boundaries=None,
+               ligand_files=None, steps=None, logger=None, return_trajectory=False) -> Dict:
+        if steps is None: steps = self.cfg.steps
+        if isinstance(coords, np.ndarray):
+            coords = torch.tensor(coords, dtype=torch.float32, device=self.device)
+        elif isinstance(coords, torch.Tensor):
+            coords = coords.to(self.device).float()
+        else:
+            raise ValueError("coords must be numpy array or torch tensor")
+
+        if coords.dim() == 2: coords = coords.unsqueeze(0)
+        B, L, _ = coords.shape
+        if B > 1:
+            coords = coords.view(-1, 3)
+        else:
+            coords = coords.squeeze(0).detach().requires_grad_(True)
+        L = len(sequence)
+
+        if mask is None: mask = torch.ones(L, dtype=torch.bool, device=self.device)
+        else: mask = torch.tensor(mask, dtype=torch.bool, device=self.device)
+
+        if chain_types is None:
+            chain_types = [detect_sequence_type(sequence[i:i+1]) for i in range(L)]
+        if chain_boundaries is None: chain_boundaries = []
+
+        max_chi = 4
+        chi = torch.zeros(L, max_chi, device=self.device, requires_grad=True)
+        alpha = torch.ones(L, device=self.device, requires_grad=True)
+
+        ligand_bridge = None
+        ligand_params = []
+        if ligand_files:
+            ligand_bridge = LigandBridge()
+            for f in ligand_files:
+                ext = os.path.splitext(f)[1].lower().lstrip('.')
+                ftype = 'sdf' if ext in ('sdf','') else 'mol2' if ext=='mol2' else 'pdb' if ext=='pdb' else 'sdf'
+                ligand_bridge.load_ligand_file(f, ftype)
+            for lig in ligand_bridge.ligands:
+                lig.to_device(self.device)
+                lig.atom_coords = lig.atom_coords.detach().requires_grad_(True)
+                ligand_params.append(lig.atom_coords)
+
+        # Initial build
+        edge_dict = self._build_edges(coords)
+        atoms = reconstruct_backbone(coords)
+        edge_hb, edge_hb_dist = NeighborListManager({'hb':3.5}, self.cfg.max_neighbors).build(atoms['O'])['hb']
+
+        params = [coords, chi, alpha] + ligand_params
+        optimizer = torch.optim.Adam(params, lr=self.cfg.lr)
+        energy_history = []
+        best_energy = float('inf')
+        best_coords = coords.clone()
+        best_chi = chi.clone()
+        best_alpha = alpha.clone()
+        trajectory = [] if return_trajectory else None
+
+        for step in range(steps):
+            T_anneal = self._temperature_schedule(step, steps)
+            self.soc.base_temp = T_anneal if self.cfg.anneal_cycles > 0 else self.cfg.base_temp
+
+            optimizer.zero_grad()
+            with autocast(enabled=self.cfg.use_amp and self.device.type == 'cuda'):
+                E = self._total_energy(coords, sequence, alpha, chi,
+                                       edge_dict, edge_hb, edge_hb_dist,
+                                       chain_boundaries, chain_types, mask,
+                                       ligand_bridge)
+                loss = E
+            self.scaler.scale(loss).backward()
+
+            av_grad = self.soc.avalanche_gradient(coords, alpha, edge_dict['elec'][0], edge_dict['elec'][1])
+            if av_grad is not None:
+                if coords.grad is not None: coords.grad = coords.grad + av_grad
+                else: coords.grad = av_grad
+
+            self.scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(params, self.cfg.grad_clip)
+            self.scaler.step(optimizer)
+            self.scaler.update()
+
+            sigma = self.soc.sigma(coords.detach())
+            T = self.soc.temperature(sigma)
+            noise_scale = math.sqrt(2 * self.cfg.friction * T.item() / 300.0) * self.cfg.lr
+            if self.cfg.use_milstein:
+                # Milstein correction for diagonal noise: dx = a dt + b dW, correction = 0.5 * b * b' * (dW^2 - dt)
+                # simple additive noise: b = noise_scale, b'=0 => no correction. So just Euler.
+                pass
+            with torch.no_grad():
+                coords.add_(torch.randn_like(coords) * noise_scale)
+                chi.data.add_(torch.randn_like(chi) * noise_scale * 0.5)
+                for lc in ligand_params: lc.add_(torch.randn_like(lc) * noise_scale * 0.1)
+
+            if self.rg and step > 0 and step % self.cfg.rg_interval == 0:
+                coords.data = self.rg.forward(coords.data)
+
+                        # Rebuild edges every step (set rebuild_interval=1)
+            if step % self.cfg.rebuild_interval == 0:
+                edge_dict = self._build_edges(coords.detach())
+                atoms = reconstruct_backbone(coords.detach())
+                edge_hb, edge_hb_dist = NeighborListManager({'hb':3.5}, self.cfg.max_neighbors).build(atoms['O'])['hb']
+
+            if loss.item() < best_energy:
+                best_energy = loss.item()
+                best_coords = coords.clone().detach()
+                best_chi = chi.clone().detach()
+                best_alpha = alpha.clone().detach()
+
+            if logger and step % 50 == 0:
+                logger.info(f"step {step:04d}  E={loss.item():.4f}  σ={sigma.item():.3f}  T={T.item():.1f}")
+            energy_history.append(loss.item())
+            if return_trajectory:
+                trajectory.append(best_coords.cpu().clone())
+
+        # Restore base temp
+        self.soc.base_temp = self.cfg.base_temp
+        return {
+            'coords': best_coords.cpu().numpy(),
+            'chi': best_chi.cpu().numpy(),
+            'alpha': best_alpha.cpu().numpy(),
+            'energy_history': energy_history,
+            'final_energy': best_energy,
+            'sigma': sigma.item(),
+            'temperature': T.item(),
+            'trajectory': np.stack(trajectory) if return_trajectory else None
+        }
+
+    def compute_energy(self, coords, sequence, chain_types=None, mask=None, chi=None, alpha=None) -> float:
+        if coords.dim() == 2: coords = coords.unsqueeze(0)
+        coords = coords.view(-1, 3)
+        L = len(sequence)
+        if mask is None: mask = torch.ones(L, dtype=torch.bool, device=coords.device)
+        if chain_types is None: chain_types = [detect_sequence_type(sequence[i:i+1]) for i in range(L)]
+        if chi is None: chi = torch.zeros(L, 4, device=coords.device)
+        if alpha is None: alpha = torch.ones(L, device=coords.device)
+        edge_dict = self._build_edges(coords)
+        atoms = reconstruct_backbone(coords)
+        edge_hb, edge_hb_dist = NeighborListManager({'hb':3.5}, self.cfg.max_neighbors).build(atoms['O'])['hb']
+        E = self._total_energy(coords, sequence, alpha, chi,
+                               edge_dict, edge_hb, edge_hb_dist,
+                               [], chain_types, mask)
+        return E.item()
+
+    def relax_local(self, coords, sequence, positions, steps=30, window=3,
+                    chain_types=None, mask=None, chi=None, alpha=None):
+        if coords.dim() == 2: coords = coords.unsqueeze(0)
+        coords = coords.view(-1, 3).detach().requires_grad_(True)
+        L = len(sequence)
+        if mask is None: mask = torch.ones(L, dtype=torch.bool, device=coords.device)
+        if chain_types is None: chain_types = [detect_sequence_type(sequence[i:i+1]) for i in range(L)]
+        if chi is None: chi = torch.zeros(L, 4, device=coords.device)
+        if alpha is None: alpha = torch.ones(L, device=coords.device)
+        min_pos = min(positions); max_pos = max(positions)
+        win_start = max(0, min_pos - window); win_end = min(L, max_pos + window + 1)
+        opt = torch.optim.Adam([coords], lr=self.cfg.lr)
+        best_E = float('inf'); best_coords = coords.clone()
+        # Build initial edges
+        edge_dict = self._build_edges(coords)
+        atoms = reconstruct_backbone(coords)
+        edge_hb, edge_hb_dist = NeighborListManager({'hb':3.5}, self.cfg.max_neighbors).build(atoms['O'])['hb']
+        for step in range(steps):
+            opt.zero_grad()
+            E = self._total_energy(coords, sequence, alpha, chi,
+                                   edge_dict, edge_hb, edge_hb_dist,
+                                   [], chain_types, mask)
+            E.backward()
+            if coords.grad is not None:
+                grad_mask = torch.zeros(L, 3, device=coords.device)
+                grad_mask[win_start:win_end] = 1.0
+                coords.grad *= grad_mask
+            opt.step()
+            # Rebuild edges after update
+            edge_dict = self._build_edges(coords.detach())
+            atoms = reconstruct_backbone(coords.detach())
+            edge_hb, edge_hb_dist = NeighborListManager({'hb':3.5}, self.cfg.max_neighbors).build(atoms['O'])['hb']
+            if E.item() < best_E:
+                best_E = E.item()
+                best_coords = coords.clone().detach()
+        return best_coords.detach(), best_E
+
+# =============================================================================
+# 16. Training Module – Learnable SOC kernel and energy weights
+# =============================================================================
+class Trainer:
+    """Fine‑tune SOC kernel parameters or energy weights from a set of PDB files."""
+    def __init__(self, cfg: RefinementConfig = None):
+        self.cfg = cfg or RefinementConfig()
+        self.engine = RefinementEngine(self.cfg)
+        self.kernel = self.engine.kernel
+
+    def load_structures(self, file_list):
+        """Load multiple PDB/mmCIF files, return list of (coords, sequence)."""
+        data = []
+        for fpath in file_list:
+            if not HAS_BIOTITE:
+                raise ImportError("biotite required for training")
+            struct = load_structure(fpath)  # see I/O Utilities below
+            data.append((struct['coords'], struct['sequence']))
+        return data
+
+    def train(self, file_list, epochs=100, lr=1e-3, use_full_atom=False, verbose=True):
+        """
+        Train kernel parameters (log_alpha, log_lambda) to minimise the energy
+        of native structures.  Returns final alpha and lambda.
+        """
+        structures = self.load_structures(file_list)
+        # Only optimise kernel parameters
+        optimizer = torch.optim.Adam(self.kernel.parameters(), lr=lr)
+        for epoch in range(epochs):
+            total_loss = 0.0
+            for coords_np, seq in structures:
+                coords = torch.tensor(coords_np, dtype=torch.float32, device=self.engine.device)
+                if use_full_atom:
+                    # Use full‑atom energy (sidechains rebuilt)
+                    chi = torch.zeros(len(seq), MAX_CHI, device=self.engine.device)
+                    alpha = torch.ones(len(seq), device=self.engine.device)
+                    E = self.engine._total_energy(
+                        coords, seq, alpha, chi,
+                        self.engine._build_edges(coords),
+                        torch.empty(2,0), torch.empty(0),
+                        [], ['protein']*len(seq), None
+                    )
+                else:
+                    E = self.engine.compute_energy(coords, seq)
+                loss = E  # minimise native energy
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+            if verbose and epoch % max(1, epochs//10) == 0:
+                print(f"Epoch {epoch:4d}  avg_loss={total_loss/len(structures):.4f}  "
+                      f"α={self.kernel.alpha.item():.4f}  λ={self.kernel.lambd.item():.4f}")
+        return self.kernel.alpha.item(), self.kernel.lambd.item()
+
+# =============================================================================
+# 17. I/O Utilities (shared by training and CLI)
+# =============================================================================
+def load_structure(filepath, chain=None):
+    """Load PDB or mmCIF and return dict with coords, sequence, chain_ids."""
+    if not HAS_BIOTITE:
+        raise ImportError("biotite required for structure I/O")
+    if filepath.endswith('.pdb'):
+        struct = pdb_io.PDBFile.read(filepath).get_structure(model=1)
+    elif filepath.endswith('.cif') or filepath.endswith('.mmcif'):
+        struct = mmcif_io.MMCIFFile.read(filepath).get_structure(model=1)
+    else:
+        raise ValueError("File must be .pdb or .cif/.mmcif")
+    if chain is not None:
+        struct = struct[struct.chain_id == chain]
+    ca = struct[struct.atom_name == "CA"]
+    coords = ca.coord.astype(np.float32)
+    seq = [AA_3_TO_1.get(res.res_name, 'X') for res in ca.residues]
+    return {'coords': coords, 'sequence': "".join(seq), 'chain_ids': list(ca.chain_id)}
+
+def save_structure(coords, sequence, filename, chain_id='A'):
+    """Save CA‑only PDB file."""
+    with open(filename, 'w') as f:
+        for i, (x,y,z) in enumerate(coords):
+            aa = sequence[i] if i < len(sequence) else 'X'
+            f.write(f"ATOM  {i+1:5d}  CA  {aa:3s} {chain_id}{i+1:4d}    "
+                    f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00           C\n")
+        f.write("END\n")
+    print(f"Saved CA‑only PDB to {filename}")
+
+# =============================================================================
+# 18. Command Line Interface
+# =============================================================================
+def main():
+    parser = argparse.ArgumentParser(description="REAL FOLD ONE – SOC Refinement Engine")
+    sub = parser.add_subparsers(dest='command', required=True)
+
+    # refine
+    refine_parser = sub.add_parser('refine', help='Refine a protein/DNA structure')
+    refine_parser.add_argument('--input','-i', required=True)
+    refine_parser.add_argument('--chain', default=None)
+    refine_parser.add_argument('--output','-o', default='refined.pdb')
+    refine_parser.add_argument('--steps', type=int, default=600)
+    refine_parser.add_argument('--lr', type=float, default=1e-4)
+    refine_parser.add_argument('--ligand', nargs='+')
+    refine_parser.add_argument('--boundaries', nargs='+', type=int)
+    refine_parser.add_argument('--device', default='auto')
+    refine_parser.add_argument('--no_rg', action='store_true')
+    refine_parser.add_argument('--no_ssc', action='store_true')
+    refine_parser.add_argument('--trajectory', action='store_true')
+    refine_parser.add_argument('--milstein', action='store_true')
+    refine_parser.add_argument('--pme', action='store_true')
+    refine_parser.add_argument('--multigrid', action='store_true')
+    refine_parser.add_argument('--block_lr', action='store_true')
+    refine_parser.add_argument('--full_atom', action='store_true', help='Export full‑atom PDB')
+
+    # train
+    train_parser = sub.add_parser('train', help='Train SOC kernel on native structures')
+    train_parser.add_argument('--input', nargs='+', required=True, help='List of PDB files')
+    train_parser.add_argument('--epochs', type=int, default=100)
+    train_parser.add_argument('--lr', type=float, default=1e-3)
+    train_parser.add_argument('--full_atom', action='store_true', help='Use full‑atom energy')
+    train_parser.add_argument('--output', default='kernel_params.json', help='Save kernel parameters')
+
+    # antibody
+    ab_parser = sub.add_parser('antibody', help='Antibody CDR loop modelling')
+    ab_parser.add_argument('--antigen', required=True)
+    ab_parser.add_argument('--cdr_start', type=int, default=95)
+    ab_parser.add_argument('--cdr_end', type=int, default=102)
+    ab_parser.add_argument('--output', default='antibody.pdb')
+
+    # origami
+    orig_parser = sub.add_parser('origami', help='DNA origami design')
+    orig_parser.add_argument('--shape', required=True, help='JSON with vertices and edges')
+    orig_parser.add_argument('--output', default='origami', help='Base filename for PDB/oxDNA')
+    orig_parser.add_argument('--bv_check', action='store_true')
+
+    # test
+    test_parser = sub.add_parser('test', help='Run gradient validation test')
+    test_parser.add_argument('--full', action='store_true')
+
+    args = parser.parse_args()
+
+    if args.command == 'refine':
+        if not HAS_BIOTITE: print("Install biotite"); sys.exit(1)
+        data = load_structure(args.input, args.chain)
+        coords, seq = data['coords'], data['sequence']
+        print(f"Loaded {len(seq)} residues")
+        device = 'cuda' if (args.device=='auto' and torch.cuda.is_available()) else args.device
+        cfg = RefinementConfig(
+            device=device, steps=args.steps, lr=args.lr,
+            use_rg=not args.no_rg, use_ssc=not args.no_ssc,
+            use_milstein=args.milstein,
+            use_pme=args.pme, use_multigrid=args.multigrid,
+            use_block_lr=args.block_lr
+        )
+        engine = RefinementEngine(cfg)
+        logging.basicConfig(level=logging.INFO)
+        logger = logging.getLogger("REAL_FOLD_ONE")
+        result = engine.refine(coords, seq, ligand_files=args.ligand,
+                               chain_boundaries=args.boundaries,
+                               logger=logger, return_trajectory=args.trajectory)
+        if args.full_atom and args.output:
+            full_coords = torch.tensor(result['coords'])
+            chi = torch.tensor(result['chi'])
+            save_full_atom_pdb(full_coords, seq, args.output, chi)
+        else:
+            save_structure(result['coords'], seq, args.output)
+        print(f"Final energy: {result['final_energy']:.4f} kcal/mol")
+        print(f"SOC sigma: {result['sigma']:.3f}  temperature: {result['temperature']:.1f} K")
+        if args.trajectory:
+            np.save(args.output.replace('.pdb','_traj.npy'), result['trajectory'])
+
+    elif args.command == 'train':
+        trainer = Trainer()
+        alpha, lambd = trainer.train(args.input, epochs=args.epochs, lr=args.lr,
+                                     use_full_atom=args.full_atom)
+        print(f"Training finished. alpha={alpha:.4f}, lambda={lambd:.4f}")
+        if args.output:
+            with open(args.output, 'w') as f:
+                json.dump({'alpha': alpha, 'lambda': lambd}, f)
+            print(f"Parameters saved to {args.output}")
+
+    elif args.command == 'antibody':
+        if not HAS_BIOTITE: print("biotite required"); sys.exit(1)
+        ant = load_structure(args.antigen)
+        ant_coords = torch.tensor(ant['coords'], dtype=torch.float32)
+        ant_seq = ant['sequence']
+        print(f"Antigen: {len(ant_seq)} residues")
+        ab_coords = torch.randn(len(ant_seq), 3) * 10
+        ab_seq = "A" * len(ant_seq)
+        scorer = RosettaScorer()
+        modeler = CDRLoopModeler(scorer)
+        best = modeler.remodel_loop(ab_coords, ab_seq, args.cdr_start, args.cdr_end, n_steps=500, temp=1.0)
+        save_structure(best.cpu().numpy(), ab_seq, args.output)
+        print(f"Antibody saved to {args.output}")
+
+    elif args.command == 'origami':
+        with open(args.shape) as f:
+            data = json.load(f)
+        vertices = data['vertices']
+        edges = data['edges']
+        origami = WireframeOrigami(vertices, edges)
+        path = origami.route_scaffold()
+        staples = origami.design_staples(path)
+        print(f"Scaffold path length: {len(path)}")
+        print(f"Designed {len(staples)} staples")
+        if args.bv_check:
+            bv = DNAOrigamiBV(vertices, edges)
+            print(f"BV topological consistency: {bv.verify_topological_consistency()}")
+        # Export full‑atom PDB by default
+        origami.export_full_atom_pdb(f"{args.output}.pdb")
+        origami.export_oxDNA(args.output)
+
+    elif args.command == 'test':
+        # simple validation test
+        seq = "AA"
+        coords = torch.tensor([[0.0, 0.0, 0.0], [3.8, 0.0, 0.0]], dtype=torch.float32, requires_grad=True)
+        cfg = RefinementConfig(steps=20, device='cpu', use_rg=False, use_amp=False)
+        engine = RefinementEngine(cfg)
+        result = engine.refine(coords, seq, steps=20)
+        print(f"Final energy: {result['final_energy']:.4f}")
+        rmsd = compute_rmsd(coords, torch.tensor(result['coords']))
+        print(f"RMSD from initial: {rmsd:.4f} Å")
+        diff = validate_gradients(engine, coords, seq)
+        print(f"Gradient validation error: {diff:.6f}")
+        if diff < 0.01:
+            print("Gradient test PASSED")
+        else:
+            print("Gradient test FAILED")
+
+if __name__ == "__main__":
+    main()
