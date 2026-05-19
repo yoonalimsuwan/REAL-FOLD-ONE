@@ -482,6 +482,41 @@ feedback loop where clinical data inform structural models, and physics‑based
 models improve the interpretation of future cancer genomes—moving closer to
 truly personalised structural oncology.
 
+### REAL FOLD ONE as a Data Engine for Predictor AI
+
+REAL FOLD ONE is not only a refinement engine—it is also a **high‑fidelity
+data generator** for training and improving structure predictors.
+
+1. **Physics‑based ground‑truth structures**
+   REAL FOLD ONE takes an initial Cα trace (from any predictor) and produces
+   a full‑atom, SOC‑optimised, clash‑free structure. These refined structures
+   serve as superior training targets for models like AlphaFold, ESMFold, or
+   RoseTTAFold, especially in loop regions and side‑chain packing where
+   predictors often struggle.
+
+2. **ΔΔG training sets**
+   The high‑throughput mutation scanner (`real_fold_one_ht.py`) can evaluate
+   thousands of single mutations with full‑atom relaxation, producing large‑scale
+   datasets of (mutation, ΔΔG) pairs. These can be used to train AI‑based
+   stability predictors that run in constant time (O(1)) instead of requiring
+   repeated physics simulations.
+
+3. **Differentiable feedback loop**
+   Because REAL FOLD ONE is written entirely in PyTorch, it can backpropagate
+   energy gradients directly into a predictor network. This allows the predictor
+   to be fine‑tuned with a physics‑informed loss, improving accuracy without
+   requiring additional experimental data.
+
+4. **Surrogate model training**
+   Pairs of (initial coarse structure, SOC‑refined full‑atom structure) can be
+   used to train an SE(3)‑equivariant GNN that predicts refined structures in a
+   single forward pass, effectively replacing iterative refinement with an O(1)
+   neural network.
+
+In summary, REAL FOLD ONE serves as both a **teacher** (providing accurate
+training targets) and a **differentiable loss function** (supplying energy
+gradients) for the next generation of AI‑based structure predictors.
+
 Citing REAL FOLD ONE
 
 ```
