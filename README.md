@@ -14,8 +14,8 @@
 
 A unified physics‑based framework for macromolecular refinement and mutational scanning.
 Built around a novel **Self‑Organised Criticality (SOC) controller**, it refines proteins, DNA, RNA,
-and their complexes using a fully differentiable energy function, then scales to thousands of
-*in silico* mutations across multiple GPUs — all without writing a single line of CUDA C++.
+and their complexes using a fully differentiable energy function powered by **OpenMM**, then scales to
+thousands of *in silico* mutations across multiple GPUs — all without writing a single line of CUDA C++.
 
 ---
 
@@ -56,11 +56,12 @@ REAL FOLD ONE consists of two tightly integrated modules:
 
 | Module | File | Purpose |
 |--------|------|---------|
-| **Core Refinement Engine** | `real_fold_one.py` | Full‑atom refinement, training, antibody, origami |
+| **Core Refinement Engine** | `real_fold_one.py` | Full‑atom refinement, training, antibody, origami, MD, validation |
 | **HT Mutation Scanner** | `real_fold_one_ht.py` | High‑throughput ΔΔG and epistasis scanning |
 
-Both modules share the same physics backend and run on CPU, single GPU, or multi‑GPU via
-`torch.multiprocessing`.
+Both modules share the same physics backend (SOC kernel, neighbour lists) and run on CPU, single GPU,
+or multi‑GPU via `torch.multiprocessing`. The HT scanner extends the core engine with a fast
+coarse‑grained energy model for scanning thousands of mutations in minutes.
 
 ---
 
@@ -70,36 +71,45 @@ Both modules share the same physics backend and run on CPU, single GPU, or multi
 
 - **SOC Controller** – learnable CSOC kernel and Semantic‑State Contraction (SSC) low‑pass filter
   adaptively tune temperature and friction during Langevin dynamics.
-- **Multiscale Refinement** – RG coarse‑graining periodically removes high‑frequency noise.
-- **Full‑Atom Physics**
-  - Proteins: AMBER ff14SB‑like parameters for all side‑chain atoms.
-  - DNA/RNA: OL15‑like parameters for all nucleotides (C4′, phosphate, base).
-  - Ligands: GAFF2 force field with automatic atom‑type assignment and topology generation.
-  - Antibodies: specialised Rosetta‑like scoring for antigen‑antibody interfaces.
-- **Advanced Electrostatics** – Sparse PME, geometric multigrid Poisson solver, block‑wise
-  multipole long‑range correction.
-- **Hierarchical Neighbor Lists** – separate cutoffs for clash, LJ, and electrostatics.
+- **Multiscale Refinement** – RG coarse‑graining periodically removes high‑frequency noise while
+  respecting chain boundaries.
+- **Full‑Atom Physics** – all forces computed via **OpenMM** with molecular mechanics force fields:
+  - Proteins: AMBER ff14SB
+  - DNA/RNA: OL15
+  - Ligands: GAFF2 (automatic SMILES lookup from PDB Chemical Component Dictionary)
+  - Post‑translational modifications (phosphoserine, methyllysine, etc.)
+  - Disulfide bond detection and constraint
+- **Implicit & Explicit Solvent** – support for GB models (OBC, GBn2) or explicit TIP3P water
+  with ions and co‑solvents.
+- **Advanced Electrostatics** – PME, reaction field, or implicit solvent; handled transparently
+  by OpenMM.
+- **Hierarchical Neighbor Lists** – fast GPU (`torch-cluster`), SciPy `cKDTree`, or pure PyTorch
+  fallback; supports multiple cutoffs.
 - **DNA Origami** – wireframe routing, staple design, full‑atom PDB export, and oxDNA format.
-- **Itô SDE** – Milstein scheme for the Langevin equation, with Malliavin sensitivity.
-- **Simulated Annealing** – optional temperature schedule from 1000 K to 300 K.
-- **Scalable** – chunked O(N) graph building supports >100 000 residues.
+- **Langevin Dynamics** – overdamped Langevin with adaptive friction, temperature, and noise
+  controlled by the SOC stress metric.
+- **Simulated Annealing** – cosine annealing with warm restarts.
+- **Scalable** – O(N) memory neighbour lists, >100 000 atoms.
 - **Environment‑Adaptive** – works on CPU (3 GB RAM), Colab T4, single GPU, or multi‑GPU (DDP).
+- **Training Module** – train the SOC kernel on native structures.
+- **Validation Suite** – Kabsch RMSD, clash score, Ramachandran outliers, rotamer analysis,
+  bond geometry checks.
+- **Molecular Dynamics** – long‑time MD simulations (ps to μs) with checkpointing.
+- **Antibody Modelling** – rigorous binding free energy via MM‑GBSA, CDR loop remodeling.
+- **Restraints** – positional restraints for partial refinement (PDB‑index friendly).
 
 ### HT Mutation Scanner (`real_fold_one_ht.py`)
 
-- **Full Single‑Mutation Scan** – every residue → every allowed monomer.
-- **Targeted Mutation Lists** – provide a JSON file of specific mutations.
-- **Double‑Mutant Epistasis** – random sampling or user‑supplied pairs.
-- **Local Relaxation Window** – fast ΔΔG estimation by relaxing only the mutation site.
-- **Multi‑GPU Parallelism** – `torch.multiprocessing` pool with checkpoint/resume.
-- **Publication‑Ready Plots** – ΔΔG distribution, mutational landscape heatmap, position‑tolerance
-  profile, epistasis distribution, additivity scatter.
-
-### Training & Validation
-
-- **Train SOC kernel** on native structures.
-- **Gradient validation** (finite‑difference check).
-- **RMSD** calculation with Kabsch superposition.
+- **Coarse‑grained Energy** – uses SOC kernel + residue‑type pairwise potentials:
+  - Hydrophobicity‑based contact potential for proteins.
+  - Base‑stacking and Watson‑Crick pairing pseudo‑energy for DNA/RNA.
+- **Local Relaxation** – fast ΔΔG estimation by gradient‑descending only residues near the mutation site.
+- **Full Single‑Mutation Scan** – every position × every allowed monomer.
+- **Targeted Mutation Lists** – evaluate only user‑specified mutations.
+- **Double‑Mutant Epistasis** – random or user‑supplied pairs; additive ΔΔG and epistasis ε reported.
+- **Multi‑GPU Parallelism** – `torch.multiprocessing` with checkpoint/resume.
+- **Publication‑Ready Plots** – ΔΔG distribution, mutational landscape, position tolerance profile,
+  epistasis distribution, additivity scatter.
 
 ---
 
@@ -125,8 +135,8 @@ refines the structure to relax backbone strain while preserving the intended fol
 
 Synthetic Proteins & Ligand Complexes
 
-Supports non‑canonical amino acids, PTMs, and protein‑ligand complexes via --ligand (SDF,
-MOL2, PDB) with automatic GAFF2 typing and topology.
+Supports non‑canonical amino acids, PTMs, and protein‑ligand complexes via --ligand-smiles (JSON)
+with automatic GAFF2 typing and topology.
 
 Typical Refinement Pipeline (AF3 → REAL FOLD ONE → OpenMM)
 
@@ -174,9 +184,13 @@ cd real-fold-one
 conda create -n realfold python=3.10 -y
 conda activate realfold
 
+# Core dependencies
+conda install -c conda-forge openmm -y
 pip install torch numpy pandas tqdm
-pip install torch-cluster          # optional, faster neighbour lists
-pip install biotite matplotlib seaborn networkx  # optional, I/O and plots
+
+# Optional but recommended
+pip install torch-cluster          # faster GPU neighbour lists
+pip install biotite matplotlib seaborn networkx rdkit openff-toolkit openmmforcefields
 ```
 
 ---
@@ -184,17 +198,23 @@ pip install biotite matplotlib seaborn networkx  # optional, I/O and plots
 Quick Start – Refinement Engine
 
 ```bash
-# Basic refinement
+# Basic refinement with implicit solvent (default OBC)
 python real_fold_one.py refine --input 1abc.pdb --output refined.pdb --steps 300
 
-# Full refinement with PME, GPU, and full‑atom export
-python real_fold_one.py refine -i 1abc.pdb -o refined_full.pdb --steps 500 --gpu --pme --full_atom
+# Explicit solvent, PME, GPU, and Langevin dynamics
+python real_fold_one.py refine -i 1abc.pdb -o refined.pdb --steps 500 --gpu --solvate --langevin
 
-# Include ligands
-python real_fold_one.py refine -i protein.pdb --ligand ligand.sdf -o complex.pdb --full_atom
+# Include ligand SMILES
+python real_fold_one.py refine -i protein.pdb --ligand-smiles '{"LIG":"c1ccccc1"}' -o complex.pdb
+
+# Positional restraints (JSON with "atoms" and "target")
+python real_fold_one.py refine -i input.pdb --restraint-json restraints.json
+
+# Full scan with trajectory output
+python real_fold_one.py refine -i 1abc.pdb --steps 1000 --rg --trajectory --output traj.pdb
 
 # Gradient validation test
-python real_fold_one.py test
+python real_fold_one.py test --input 1abc.pdb
 ```
 
 ---
@@ -203,6 +223,14 @@ High‑Throughput Mutation Scanning (HT)
 
 The real_fold_one_ht.py module handles all in silico mutagenesis — from single‑mutation scans
 to double‑mutant epistasis — with checkpointing and multi‑GPU support.
+
+Energy Model
+The HT scanner uses a fast coarse‑grained potential derived from the core SOC kernel and
+sequence‑dependent terms:
+
+· Protein: hydrophobicity‑based contact energy (Miyazawa‑Jernigan style).
+· DNA/RNA: base‑stacking and Watson‑Crick pairing pseudo‑energies.
+· Local relaxation: only residues within ±window of the mutation are free to move.
 
 Targeted vs Full Scan
 
@@ -220,9 +248,6 @@ calculate additive ΔΔG, then evaluates only the double mutant to obtain epista
 ```
 
 Workflow: Targeted → Global Optimization
-
-A powerful strategy is to first scan a targeted list, then perform a full scan on the best
-variant to discover epistatic stabilisations:
 
 ```bash
 # Step 1: Targeted scan on residues of interest
@@ -252,9 +277,6 @@ python real_fold_one_ht.py --pdb 1abc.pdb --single "0:5:A"
 
 # Epistasis (random pairs)
 python real_fold_one_ht.py --pdb 1abc.pdb --epistasis --max_epi 500
-
-# Epistasis (predefined pairs)
-python real_fold_one_ht.py --pdb 1abc.pdb --epistasis --epipairs my_pairs.json
 ```
 
 Input JSON Formats
@@ -299,110 +321,102 @@ DNA Origami Design
 python real_fold_one.py origami --shape shape.json --output my_origami
 ```
 
-Outputs: full‑atom PDB, oxDNA top/dat files, optional BV topological check (--bv_check).
+Outputs: full‑atom PDB, oxDNA top/dat files.
 
 ---
 
 Validation & Testing
 
 · Gradient check: python real_fold_one.py test
-· RMSD: compute_rmsd() with Kabsch alignment.
-· BV check: for origami, --bv_check verifies the classical master equation.
+· Structure validation: python real_fold_one.py validate --input refined.pdb --reference native.pdb
+  Reports initial/final energy, RMSD, clash score, Ramachandran outliers, rotamer outliers.
 
 ---
 
 Performance Tips
 
 · Install torch-cluster for GPU‑accelerated neighbour lists.
-· For large systems (>10 000 residues), increase --rebuild_interval and keep RG enabled.
+· For large systems (>10 000 residues), increase --rebuild_interval and enable RG.
 · Use --full_atom only for final export; side‑chains are rebuilt on‑the‑fly during scanning.
 · For multi‑GPU, set --num_gpus to available devices; ≈3 GB VRAM per 500‑residue protein.
 · On CPU, set OMP_NUM_THREADS to control parallelism.
 
 ---
 
-`
-### Future: AI‑Driven Refinement and the Path to O(1) Complexity
+Future: AI‑Driven Refinement and the Path to O(1) Complexity
 
-REAL FOLD ONE is built from the ground up as a **differentiable physics engine**.
+REAL FOLD ONE is built from the ground up as a differentiable physics engine.
 Every component—the SOC controller, CSOC kernel, energy terms, and even the implicit solvent
 approximation—runs inside PyTorch’s autograd graph. This architectural choice means that
-REAL FOLD ONE is not merely a refinement tool; it is also a **native AI platform**.
+REAL FOLD ONE is not merely a refinement tool; it is also a native AI platform.
 
 Because the entire pipeline is differentiable, it can be directly embedded as a layer in a
 larger neural network, or used to generate physically rigorous training data for deep learning
-models. This opens three concrete paths toward **near‑O(1) complexity** in macromolecular
+models. This opens three concrete paths toward near‑O(1) complexity in macromolecular
 refinement and simulation:
 
-1. **Learned Refinement Surrogates**  
-   A neural network (e.g., an SE(3)‑equivariant GNN) can be trained on pairs of
+1. Learned Refinement Surrogates
+      A neural network (e.g., an SE(3)‑equivariant GNN) can be trained on pairs of
    (initial coarse structure, SOC‑refined full‑atom structure). Once trained, the network
    predicts the refined structure in a single forward pass—completely bypassing the iterative
    energy minimisation. The computational cost becomes independent of protein size, yielding
-   *de facto* O(1) behaviour.
-
-2. **Adaptive Simulation Control**  
-   The SOC controller outputs a real‑time stress metric (σ) that quantifies local strain.
+   de facto O(1) behaviour.
+2. Adaptive Simulation Control
+      The SOC controller outputs a real‑time stress metric (σ) that quantifies local strain.
    An AI agent can read this signal to dynamically decide:
-   - when to hand a structure back to REAL FOLD ONE for further refinement,
-   - when to change the integration time‑step in a downstream MD engine (GPUMD, OpenMM),
-   - or when to terminate a simulation because the system has reached equilibrium.
-   This removes the manual tuning that dominates large‑scale MD, making the entire pipeline
-   more efficient and less dependent on human expertise.
-
-3. **Learned Force Fields and Differentiable MD**  
-   The same differentiable backbone allows REAL FOLD ONE to adopt machine‑learning force
+   · when to hand a structure back to REAL FOLD ONE for further refinement,
+   · when to change the integration time‑step in a downstream MD engine (GPUMD, OpenMM),
+   · or when to terminate a simulation because the system has reached equilibrium.
+     This removes the manual tuning that dominates large‑scale MD, making the entire pipeline
+     more efficient and less dependent on human expertise.
+3. Learned Force Fields and Differentiable MD
+      The same differentiable backbone allows REAL FOLD ONE to adopt machine‑learning force
    fields (e.g., MACE‑MP, Allegro, NEP). In this scenario, the energy function itself is a
    neural network, and refinement becomes gradient descent through a learned potential.
    Coupled with a differentiable MD engine, the whole simulation loop could be optimised
    end‑to‑end—for instance, to minimise the SOC stress of the final equilibrated ensemble.
 
-**Vision**  
+Vision
 REAL FOLD ONE sits at the centre of a future stack:
 
 ```
-
 Sequence → AF3 → REAL FOLD ONE → AI‑Guided MD (GPUMD / MindSPONGE)
-↕
-Learned Surrogate Models
-
+                         ↕
+              Learned Surrogate Models
 ```
 
-In this ecosystem, REAL FOLD ONE serves as both a **physics‑based teacher** and a
-**differentiable evaluation module**. The result is a self‑improving loop that continuously
+In this ecosystem, REAL FOLD ONE serves as both a physics‑based teacher and a
+differentiable evaluation module. The result is a self‑improving loop that continuously
 shrinks the gap between prediction, refinement, and simulation—ultimately delivering
 refined, production‑ready structures with a computational cost that approaches constant
 time for the end user.
 
-*This is not a distant dream; the differentiable architecture of REAL FOLD ONE already
-provides all the primitives necessary to build these AI‑driven capabilities.*
-```
-* Need for Quantum Computing ??
+This is not a distant dream; the differentiable architecture of REAL FOLD ONE already
+provides all the primitives necessary to build these AI‑driven capabilities.
 
-```
-### Reducing the Need for Quantum Computing through Differentiable Physics and AI
+---
+
+Reducing the Need for Quantum Computing through Differentiable Physics and AI
 
 Quantum computing has long been viewed as the ultimate solution for tackling the
 exponential complexity of molecular simulation. However, REAL FOLD ONE demonstrates
 an alternative path—one that achieves near-constant-time refinement by fusing
 differentiable physics with modern deep learning.
 
-1. **Bypassing Computational Complexity**  
-   Traditional MD and quantum chemistry scale as O(N²) or O(N³). By embedding a
+1. Bypassing Computational Complexity
+      Traditional MD and quantum chemistry scale as O(N²) or O(N³). By embedding a
    fully differentiable SOC‑based physics engine inside an autograd framework,
    REAL FOLD ONE enables the training of AI surrogate models. Once trained, these
-   models predict the refined structure in a single forward pass, offering *de facto*
+   models predict the refined structure in a single forward pass, offering de facto
    O(1) complexity on commodity hardware.
-
-2. **A Physics‑Based Teacher for AI**  
-   Pure deep learning often violates physical constraints. REAL FOLD ONE acts as a
+2. A Physics‑Based Teacher for AI
+      Pure deep learning often violates physical constraints. REAL FOLD ONE acts as a
    rigorous, differentiable teacher that supplies thermodynamic gradients back to the
    AI model. This creates a self‑improving loop where the AI learns to respect
    energy landscapes, torsional preferences, and steric constraints, closing the gap
    between data‑driven prediction and first‑principle physics.
-
-3. **Hardware Democratisation**  
-   The engine is written entirely in PyTorch primitives without a single line of
+3. Hardware Democratisation
+      The engine is written entirely in PyTorch primitives without a single line of
    CUDA C++. This vendor‑neutral design runs unchanged on NVIDIA GPUs, Huawei
    Ascend NPUs, Apple MPS, or any future accelerator that supports PyTorch.
    It proves that strategic algorithmic design can overcome the need for specialised
@@ -413,34 +427,39 @@ REAL FOLD ONE thus repositions the frontier: instead of waiting for fault‑tole
 quantum computers, we can harness the synergy of differentiable physics and AI to
 solve macromolecular problems at constant cost today.
 
-### REAL FOLD ONE vs. Phenix: Complementary Roles in Structural Refinement
+---
+
+REAL FOLD ONE vs. Phenix: Complementary Roles in Structural Refinement
 
 Phenix is the gold standard for refining structures against experimental data
 (Cryo‑EM density maps, X‑ray diffraction). It optimises atomic coordinates to
 maximise agreement with the observed data, using a likelihood‑based target
-function. REAL FOLD ONE, by contrast, is a **physics‑ and AI‑driven refinement
-engine**—it does not require experimental data and instead minimises a fully
+function. REAL FOLD ONE, by contrast, is a physics‑ and AI‑driven refinement
+engine—it does not require experimental data and instead minimises a fully
 differentiable energy function under SOC control.
 
-**When REAL FOLD ONE can replace Phenix (or where it excels):**
-- **Post‑AlphaFold 3 refinement** – AF3 models often contain minor steric clashes
+When REAL FOLD ONE can replace Phenix (or where it excels):
+
+· Post‑AlphaFold 3 refinement – AF3 models often contain minor steric clashes
   or strained geometry. REAL FOLD ONE relaxes these purely through physics,
   without any experimental map, often outperforming Phenix’s geometry
   regularisation for this task.
-- **High‑throughput mutation scanning** – Phenix is not designed for thousands
-  of *in silico* mutations. REAL FOLD ONE’s HT module can evaluate ΔΔG values
+· High‑throughput mutation scanning – Phenix is not designed for thousands
+  of in silico mutations. REAL FOLD ONE’s HT module can evaluate ΔΔG values
   across massive mutational landscapes on multi‑GPU systems.
-- **Differentiable integration with AI** – REAL FOLD ONE is fully differentiable
+· Differentiable integration with AI – REAL FOLD ONE is fully differentiable
   (PyTorch autograd). It can backpropagate gradients through the entire
   refinement process, enabling AI‑driven surrogate models and closed‑loop
   training. Phenix has no comparable capability.
 
-**When Phenix remains essential:**
-- **Experimental data fitting** – Phenix refines against real electron density
+When Phenix remains essential:
+
+· Experimental data fitting – Phenix refines against real electron density
   maps, optimising R‑work/R‑free. REAL FOLD ONE does not use experimental
   data and cannot replace this step.
 
-**Ideal hybrid workflow:**
+Ideal hybrid workflow:
+
 1. Build an initial model with Phenix (using Cryo‑EM/X‑ray data).
 2. Pass the model to REAL FOLD ONE for final physics‑based cleanup,
    resolving clashes and optimising electrostatics.
@@ -451,7 +470,9 @@ Thus, REAL FOLD ONE and Phenix are not competitors but complementary tools that
 together span the full spectrum from experiment‑driven to physics‑driven
 refinement.
 
-### Connecting Genomic Data to Structural Impact: Cancer Mutations and Duons
+---
+
+Connecting Genomic Data to Structural Impact: Cancer Mutations and Duons
 
 REAL FOLD ONE is uniquely positioned to bridge clinical genomics and
 structural biology. By ingesting mutation data from cancer institutes
@@ -459,20 +480,18 @@ structural biology. By ingesting mutation data from cancer institutes
 thousands of patient‑derived variants directly onto protein structures and
 compute their effect on folding stability and electrostatic integrity.
 
-- **Physics‑based interpretation of clinical variants** – For every observed
+· Physics‑based interpretation of clinical variants – For every observed
   missense mutation, REAL FOLD ONE evaluates ΔΔG and the local stress
   redistribution (σ) through its SOC controller. This allows researchers to
   distinguish between passenger mutations and driver mutations that
   destabilise key domains or binding interfaces.
-
-- **Duon analysis** – Duons are codons that simultaneously encode an amino
+· Duon analysis – Duons are codons that simultaneously encode an amino
   acid and a splicing or regulatory signal. Mutations at these positions
   can alter both protein sequence and gene regulation. REAL FOLD ONE can
   combine structural stability scores with regulatory impact scores,
   providing a unified picture of how duon mutations affect cellular function.
-
-- **Population‑scale scanning** – The high‑throughput mutation pipeline
-  (`real_fold_one_ht.py`) can scan thousands of cancer‑associated variants
+· Population‑scale scanning – The high‑throughput mutation pipeline
+  (real_fold_one_ht.py) can scan thousands of cancer‑associated variants
   in hours on a multi‑GPU cluster, generating structural scores that can
   be correlated with patient survival data, drug response, or evolutionary
   conservation.
@@ -482,47 +501,47 @@ feedback loop where clinical data inform structural models, and physics‑based
 models improve the interpretation of future cancer genomes—moving closer to
 truly personalised structural oncology.
 
-### REAL FOLD ONE as a Data Engine for Predictor AI
+---
 
-REAL FOLD ONE is not only a refinement engine—it is also a **high‑fidelity
-data generator** for training and improving structure predictors.
+REAL FOLD ONE as a Data Engine for Predictor AI
 
-1. **Physics‑based ground‑truth structures**
+REAL FOLD ONE is not only a refinement engine—it is also a high‑fidelity
+data generator for training and improving structure predictors.
+
+1. Physics‑based ground‑truth structures
    REAL FOLD ONE takes an initial Cα trace (from any predictor) and produces
    a full‑atom, SOC‑optimised, clash‑free structure. These refined structures
    serve as superior training targets for models like AlphaFold, ESMFold, or
    RoseTTAFold, especially in loop regions and side‑chain packing where
    predictors often struggle.
-
-2. **ΔΔG training sets**
-   The high‑throughput mutation scanner (`real_fold_one_ht.py`) can evaluate
+2. ΔΔG training sets
+   The high‑throughput mutation scanner (real_fold_one_ht.py) can evaluate
    thousands of single mutations with full‑atom relaxation, producing large‑scale
    datasets of (mutation, ΔΔG) pairs. These can be used to train AI‑based
    stability predictors that run in constant time (O(1)) instead of requiring
    repeated physics simulations.
-
-3. **Differentiable feedback loop**
+3. Differentiable feedback loop
    Because REAL FOLD ONE is written entirely in PyTorch, it can backpropagate
    energy gradients directly into a predictor network. This allows the predictor
    to be fine‑tuned with a physics‑informed loss, improving accuracy without
    requiring additional experimental data.
-
-4. **Surrogate model training**
+4. Surrogate model training
    Pairs of (initial coarse structure, SOC‑refined full‑atom structure) can be
    used to train an SE(3)‑equivariant GNN that predicts refined structures in a
    single forward pass, effectively replacing iterative refinement with an O(1)
    neural network.
 
-In summary, REAL FOLD ONE serves as both a **teacher** (providing accurate
-training targets) and a **differentiable loss function** (supplying energy
+In summary, REAL FOLD ONE serves as both a teacher (providing accurate
+training targets) and a differentiable loss function (supplying energy
 gradients) for the next generation of AI‑based structure predictors.
+
+---
 
 Citing REAL FOLD ONE
 
 ```
 Yoon A Limsuwan. "REAL FOLD ONE: SOC‑Controlled Universal Refinement Engine."
 Zenodo, 2026.  DOI: 10.5281/zenodo.20264580
-
 ```
 
 ---
