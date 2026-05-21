@@ -1,4 +1,4 @@
-`
+``
 # REAL FOLD ONE
 
 **SOC‑Controlled Universal Refinement & High‑Throughput Mutation Scanning Suite**
@@ -94,7 +94,8 @@ coarse‑grained energy model for scanning thousands of mutations in minutes.
 - **Training Module** – train the SOC kernel on native structures.
 - **Validation Suite** – Kabsch RMSD, clash score, Ramachandran outliers, rotamer analysis,
   bond geometry checks.
-- **Molecular Dynamics** – long‑time MD simulations (ps to μs) with checkpointing.
+- **Molecular Dynamics** – long‑time MD simulations (ps to μs) with explicit solvent, NPT/NVT,
+  checkpointing, **all inside REAL FOLD ONE** — no external engine needed.
 - **Antibody Modelling** – rigorous binding free energy via MM‑GBSA, CDR loop remodeling.
 - **Restraints** – positional restraints for partial refinement (PDB‑index friendly).
 
@@ -115,63 +116,42 @@ coarse‑grained energy model for scanning thousands of mutations in minutes.
 
 ## Integration with Structure Predictors
 
-REAL FOLD ONE is a **post‑processing refinement engine** for any structure predictor
-(AlphaFold 3, ESMFold, Rosetta, etc.). It takes initial Cα coordinates and:
-
-- Corrects local strain and steric clashes.
-- Optimises hydrogen‑bond networks and electrostatics.
-- Rebuilds full side‑chain and nucleic acid conformations.
-
-### Natural Proteins
-
-```text
-Sequence → Predictor (e.g. AlphaFold 3) → Cα model → REAL FOLD ONE refine → Full‑atom refined structure
-```
-
-De Novo Designed Proteins
-
-Accepts an arbitrary Cα trace (even idealised fragments), builds all atoms de novo, and
-refines the structure to relax backbone strain while preserving the intended fold.
-
-Synthetic Proteins & Ligand Complexes
-
-Supports non‑canonical amino acids, PTMs, and protein‑ligand complexes via --ligand-smiles (JSON)
-with automatic GAFF2 typing and topology.
-
-Typical Refinement Pipeline (AF3 → REAL FOLD ONE → OpenMM)
+REAL FOLD ONE is a **complete post‑prediction pipeline**. It takes an initial Cα model from
+AlphaFold 3, ESMFold, Rosetta, or any predictor, and carries it all the way to a fully
+solvated, equilibrated MD trajectory — without ever leaving the REAL FOLD ONE environment.
 
 ```
-┌─────────────┐      ┌──────────────────┐      ┌────────────┐
-│ AlphaFold 3 │ ──► │  REAL FOLD ONE   │ ──► │  OpenMM    │
-│  (or any    │      │   refine /       │      │  (explicit │
-│  predictor) │      │   full_atom      │      │   solvent  │
-│             │      │   export)        │      │   MD)      │
-└─────────────┘      └──────────────────┘      └────────────┘
+
+┌─────────────┐      ┌─────────────────────────────────────────────────┐
+│ AlphaFold 3 │ ──► │              REAL FOLD ONE                        │
+│  (or any    │      │  refine → validate → md (explicit solvent,       │
+│  predictor) │      │  NPT/NVT, checkpointing, full analysis)          │
+└─────────────┘      └─────────────────────────────────────────────────┘
+
 ```
 
-REAL FOLD ONE’s SOC‑driven avalanche relaxation and full‑atom minimisation gently resolve
-steric clashes and sub‑optimal rotamers, producing a clean starting structure for MD and
-preventing early “blow‑up”.
+- **Refine**: SOC‑guided energy minimisation, clash removal, side‑chain optimisation.
+- **Validate**: RMSD, Ramachandran, rotamer, clash score — all built in.
+- **MD**: Launch production MD with a single command. The system is solvated, ions added,
+  and simulated with OpenMM under the hood, but you only ever interact with REAL FOLD ONE.
 
 Complete example:
 
 ```bash
-# Obtain predicted structure from AlphaFold 3 (e.g., folded_model.pdb)
+# Predict structure with AlphaFold 3 → folded_model.pdb
 
-# Refine and rebuild full atoms with REAL FOLD ONE
-python real_fold_one.py refine \
-    --input folded_model.pdb \
-    --output refined_full.pdb \
-    --steps 500 \
-    --pme \
-    --full_atom \
-    --gpu
+# Step 1: Refine
+python real_fold_one.py refine -i folded_model.pdb -o refined.pdb --steps 500 --gpu
 
-# (Optional) Validate
-python real_fold_one.py test
+# Step 2: Validate
+python real_fold_one.py validate --input refined.pdb --reference native.pdb
 
-# Use the refined structure directly in OpenMM
+# Step 3: Run MD (explicit solvent, NPT, 100 ns)
+python real_fold_one.py md -i refined.pdb -o traj --steps 50000000 --temperature 310 --gpu
 ```
+
+All steps share the same molecular topology and force field; there is no format conversion
+or data loss between stages.
 
 ---
 
@@ -184,7 +164,7 @@ cd real-fold-one
 conda create -n realfold python=3.10 -y
 conda activate realfold
 
-# Core dependencies
+# Core dependencies (OpenMM is required)
 conda install -c conda-forge openmm -y
 pip install torch numpy pandas tqdm
 
@@ -210,11 +190,11 @@ python real_fold_one.py refine -i protein.pdb --ligand-smiles '{"LIG":"c1ccccc1"
 # Positional restraints (JSON with "atoms" and "target")
 python real_fold_one.py refine -i input.pdb --restraint-json restraints.json
 
-# Full scan with trajectory output
-python real_fold_one.py refine -i 1abc.pdb --steps 1000 --rg --trajectory --output traj.pdb
-
 # Gradient validation test
 python real_fold_one.py test --input 1abc.pdb
+
+# Run explicit-solvent MD for 100 ns after refinement
+python real_fold_one.py md -i refined.pdb -o prod --steps 50000000 --gpu --temperature 310
 ```
 
 ---
