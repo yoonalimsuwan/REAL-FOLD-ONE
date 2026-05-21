@@ -9,8 +9,7 @@
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20007526-blue)](https://doi.org/10.5281/zenodo.20007526)
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.19814975-blue)](https://doi.org/10.5281/zenodo.19814975)
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20194882-blue)](https://doi.org/10.5281/zenodo.20194882)
-[![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20264580-blue)](https://doi.org/10.5281/zenodo.20264580)
-
+[![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20324608-blue)](https://doi.org/10.5281/zenodo.20324608)
 
 A unified physics‑based framework for macromolecular refinement and mutational scanning.
 Built around a novel **Self‑Organised Criticality (SOC) controller**, it refines proteins, DNA, RNA,
@@ -521,7 +520,7 @@ Citing REAL FOLD ONE
 
 ```
 Yoon A Limsuwan. "REAL FOLD ONE: SOC‑Controlled Universal Refinement Engine."
-Zenodo, 2026.  DOI: 10.5281/zenodo.20264580
+Zenodo, 2026.  DOI: 10.5281/zenodo.20324608
 ```
 
 ---
