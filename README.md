@@ -10,6 +10,8 @@
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.19814975-blue)](https://doi.org/10.5281/zenodo.19814975)
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20194882-blue)](https://doi.org/10.5281/zenodo.20194882)
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20324608-blue)](https://doi.org/10.5281/zenodo.20324608)
+[![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20379088-blue)](https://doi.org/10.5281/zenodo.20379088)
+
 
 A unified physics‑based framework for macromolecular refinement and mutational scanning.
 Built around a novel **Self‑Organised Criticality (SOC) controller**, it refines proteins, DNA, RNA,
