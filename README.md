@@ -9,7 +9,7 @@
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20007526-blue)](https://doi.org/10.5281/zenodo.20007526)
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.19814975-blue)](https://doi.org/10.5281/zenodo.19814975)
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20194882-blue)](https://doi.org/10.5281/zenodo.20194882)
-[![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20551336-blue)](https://doi.org/10.5281/zenodo.20551336)
+[![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20563487-blue)](https://doi.org/10.5281/zenodo.20563487)
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20379088-blue)](https://doi.org/10.5281/zenodo.20379088)
 
 
@@ -522,7 +522,8 @@ Citing REAL FOLD ONE
 
 ```
 Yoon A Limsuwan. "REAL FOLD ONE: SOC‑Controlled Universal Refinement Engine."
-Zenodo, 2026.  https://doi.org/10.5281/zenodo.20551336
+Zenodo, 2026.
+https://doi.org/10.5281/zenodo.20563487
 ```
 
 ---
