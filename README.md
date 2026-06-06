@@ -142,10 +142,10 @@ Complete example:
 # Predict structure with AlphaFold 3 → folded_model.pdb
 
 # Step 1: Refine
-python real_fold_one.py refine -i folded_model.pdb -o refined.pdb --steps 500 --gpu
+python real_fold_one_v2.py refine -i folded_model.pdb -o refined.pdb --steps 500 --gpu
 
 # Step 2: Validate
-python real_fold_one.py validate --input refined.pdb --reference native.pdb
+python real_fold_one_v2.py validate --input refined.pdb --reference native.pdb
 
 # Step 3: Run MD (explicit solvent, NPT, 100 ns)
 python real_fold_one.py md -i refined.pdb -o traj --steps 50000000 --temperature 310 --gpu
@@ -180,29 +180,29 @@ Quick Start – Refinement Engine
 
 ```bash
 # Basic refinement with implicit solvent (default OBC)
-python real_fold_one.py refine --input 1abc.pdb --output refined.pdb --steps 300
+python real_fold_one_v2.py refine --input 1abc.pdb --output refined.pdb --steps 300
 
 # Explicit solvent, PME, GPU, and Langevin dynamics
 python real_fold_one.py refine -i 1abc.pdb -o refined.pdb --steps 500 --gpu --solvate --langevin
 
 # Include ligand SMILES
-python real_fold_one.py refine -i protein.pdb --ligand-smiles '{"LIG":"c1ccccc1"}' -o complex.pdb
+python real_fold_one_v2.py refine -i protein.pdb --ligand-smiles '{"LIG":"c1ccccc1"}' -o complex.pdb
 
 # Positional restraints (JSON with "atoms" and "target")
-python real_fold_one.py refine -i input.pdb --restraint-json restraints.json
+python real_fold_one_v2.py refine -i input.pdb --restraint-json restraints.json
 
 # Gradient validation test
-python real_fold_one.py test --input 1abc.pdb
+python real_fold_one_v2.py test --input 1abc.pdb
 
 # Run explicit-solvent MD for 100 ns after refinement
-python real_fold_one.py md -i refined.pdb -o prod --steps 50000000 --gpu --temperature 310
+python real_fold_one_v2.py md -i refined.pdb -o prod --steps 50000000 --gpu --temperature 310
 ```
 
 ---
 
 High‑Throughput Mutation Scanning (HT)
 
-The real_fold_one_ht.py module handles all in silico mutagenesis — from single‑mutation scans
+The real_fold_one_ht_v2.py module handles all in silico mutagenesis — from single‑mutation scans
 to double‑mutant epistasis — with checkpointing and multi‑GPU support.
 
 Energy Model
@@ -232,32 +232,32 @@ Workflow: Targeted → Global Optimization
 
 ```bash
 # Step 1: Targeted scan on residues of interest
-python real_fold_one_ht.py --pdb wildtype.pdb --mutlist my_targets.json --output step1_out
+python real_fold_one_ht_v2.py --pdb wildtype.pdb --mutlist my_targets.json --output step1_out
 
 # Step 2: Full scan on the best variant
-python real_fold_one_ht.py --pdb step1_out/best_variant.pdb --scan --output step2_out
+python real_fold_one_ht_v2.py --pdb step1_out/best_variant.pdb --scan --output step2_out
 ```
 
 Full command examples:
 
 ```bash
 # Full single‑mutation scan
-python real_fold_one_ht.py --pdb 1abc.pdb --scan --output ht_out
+python real_fold_one_ht_v2.py --pdb 1abc.pdb --scan --output ht_out
 
 # DNA scan (ideal helix built automatically)
-python real_fold_one_ht.py --seq "ATGCGTACGTAG" --scan --output dna_scan
+python real_fold_one_ht_v2.py --seq "ATGCGTACGTAG" --scan --output dna_scan
 
 # Multi‑GPU with resume
-python real_fold_one_ht.py --pdb 1abc.pdb --scan --gpu --num_gpus 2 --resume
+python real_fold_one_ht_v2.py --pdb 1abc.pdb --scan --gpu --num_gpus 2 --resume
 
 # Targeted list
-python real_fold_one_ht.py --pdb 1abc.pdb --mutlist my_muts.json --output targeted
+python real_fold_one_ht_v2.py --pdb 1abc.pdb --mutlist my_muts.json --output targeted
 
 # Quick single mutation
-python real_fold_one_ht.py --pdb 1abc.pdb --single "0:5:A"
+python real_fold_one_ht_v2.py --pdb 1abc.pdb --single "0:5:A"
 
 # Epistasis (random pairs)
-python real_fold_one_ht.py --pdb 1abc.pdb --epistasis --max_epi 500
+python real_fold_one_ht_v2.py --pdb 1abc.pdb --epistasis --max_epi 500
 ```
 
 Input JSON Formats
@@ -290,7 +290,7 @@ python real_fold_one.py train --input native1.pdb native2.pdb --epochs 100 --out
 Antibody CDR Modelling
 
 ```bash
-python real_fold_one.py antibody --antigen antigen.pdb --cdr_start 95 --cdr_end 102 --output antibody.pdb
+python real_fold_one_v2.py antibody --antigen antigen.pdb --cdr_start 95 --cdr_end 102 --output antibody.pdb
 ```
 
 ---
@@ -299,7 +299,7 @@ DNA Origami Design
 
 ```bash
 # shape.json contains "vertices" and "edges"
-python real_fold_one.py origami --shape shape.json --output my_origami
+python real_fold_one_v2.py origami --shape shape.json --output my_origami
 ```
 
 Outputs: full‑atom PDB, oxDNA top/dat files.
