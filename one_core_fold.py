@@ -317,7 +317,19 @@ class LangevinBridge:
     def reset(self) -> None:
         """Reset Langevin velocities and integrator state."""
         self._velocities = None
+        self._alpha_cache = None
         self.langevin.reset()
+
+    def set_alpha(self, alpha: torch.Tensor) -> None:
+        """
+        Cache the current alpha tensor so that _force_fn can use it for
+        SOC energy evaluation.  Call this each time alpha is updated in
+        the outer refine() loop before calling bridge.step().
+
+        Args:
+            alpha : (N_ca,) learnable criticality weights (detached copy).
+        """
+        self._alpha_cache = alpha.detach().clone()
 
     # ------------------------------------------------------------------
 
@@ -350,8 +362,13 @@ class LangevinBridge:
         ca = self.engine._get_ca_coords(coords)
         ca_det = ca.detach()
         edge_dict = self.engine.neighbor_mgr.build(ca_det)
-        alpha = self.engine._alpha if hasattr(self.engine, "_alpha") else \
-                torch.ones(ca.shape[0], device=coords.device, dtype=coords.dtype)
+        # Bug 3 fix: RefinementEngine does not store alpha as an attribute —
+        # alpha is a local variable inside refine().  Use bridge._alpha_cache
+        # if set externally (bridge.set_alpha(alpha)), otherwise fall back to
+        # uniform ones so SOC energy is evaluated (not silently skipped).
+        alpha = getattr(self, "_alpha_cache", None)
+        if alpha is None or alpha.shape[0] != ca.shape[0]:
+            alpha = torch.ones(ca.shape[0], device=coords.device, dtype=coords.dtype)
         E_soc = self.engine.soc.compute_soc_energy(
             ca, alpha,
             edge_dict["soc"][0], edge_dict["soc"][1],
