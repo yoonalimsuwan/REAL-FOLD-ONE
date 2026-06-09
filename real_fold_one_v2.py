@@ -1223,47 +1223,74 @@ class CSOCKernel(nn.Module):
 # SemanticStateContraction imported from one_core_fold
 
 
-class SOCController(nn.Module):
+class SOCController(CSOCBase):
     """
     Self‑Organized Criticality controller.
     Computes structural stress σ, adaptive temperature, and SOC interaction energy.
+
+    Inherits from CSOCBase (one_core_fold) to share:
+      - self.ssc  : SemanticStateContraction EMA filter
+      - _normalised_deviation() : (σ − σ_target) / σ_target
+      - _smooth_boost()         : sigmoid boost ∈ (0, 1)
+      - reset()                 : clears SSC EMA state
     """
     def __init__(self, base_temp: float = 300.0, friction: float = 0.02,
                  sigma_target: float = 1.0, avalanche_threshold: float = 0.5,
                  w_avalanche: float = 0.2, kernel: Optional[CSOCKernel] = None,
-                 use_ssc: bool = True, epsilon_fp: float = 0.0028):
-        super().__init__()
+                 use_ssc: bool = True, epsilon_fp: float = 0.0028,
+                 boost_factor: float = 3.0):
+        # CSOCBase.__init__ creates self.ssc, self.sigma_target, self.boost_factor
+        super().__init__(
+            sigma_target=sigma_target,
+            epsilon_fp=epsilon_fp,
+            boost_factor=boost_factor,
+        )
         self.base_temp = base_temp
         self.friction = friction
-        self.sigma_target = sigma_target
         self.avalanche_threshold = avalanche_threshold
         self.w_avalanche = w_avalanche
         self.kernel = kernel or CSOCKernel()
         self.use_ssc = use_ssc
-        # SemanticStateContraction from one_core_fold (fixed init-check + reset)
-        self.ssc = SemanticStateContraction(epsilon_fp, sigma_target) if use_ssc else None
-        self.register_buffer('prev_coords', None)
+        # Bug 2 fix: replace register_buffer('prev_coords', None) with
+        # boolean _initialized pattern — safe across .to(device) and checkpoint load.
+        self.register_buffer('_prev_coords',   torch.zeros(1, 3))
+        self.register_buffer('_coords_ready',  torch.tensor(False))
 
     def sigma(self, coords: torch.Tensor) -> torch.Tensor:
-        if self.prev_coords is None:
-            self.prev_coords = coords.detach().clone()
-            return torch.tensor(1.0, device=coords.device)
-        delta = torch.norm(coords - self.prev_coords, dim=-1).mean()
-        self.prev_coords = coords.detach().clone()
+        # Migrate buffers if needed (e.g. after .to(device))
+        if self._prev_coords.device != coords.device:
+            self._prev_coords  = self._prev_coords.to(coords.device)
+            self._coords_ready = self._coords_ready.to(coords.device)
+
+        if not self._coords_ready.item() or self._prev_coords.shape != coords.shape:
+            self._prev_coords = coords.detach().clone()
+            self._coords_ready.fill_(True)
+            return torch.tensor(1.0, device=coords.device, dtype=coords.dtype)
+
+        delta = torch.norm(coords - self._prev_coords, dim=-1).mean()
+        self._prev_coords = coords.detach().clone()
         if self.use_ssc and self.ssc is not None:
             delta = self.ssc(delta)
         return delta
 
     def temperature(self, sigma: torch.Tensor) -> torch.Tensor:
-        dev = (sigma - self.sigma_target) / 0.5
-        T = self.base_temp + 2000.0 * torch.sigmoid(dev)
-        return torch.clamp(T, self.base_temp * 0.5, 3000.0)
+        # Use _normalised_deviation from CSOCBase (uses self.sigma_target correctly)
+        dev = self._normalised_deviation(sigma)
+        boost = self.base_temp * (self.boost_factor - 1.0)
+        T = self.base_temp + boost * torch.sigmoid(dev)
+        return torch.clamp(T, self.base_temp * 0.5, self.base_temp * self.boost_factor)
 
+    # CSOCBase.reset() clears self.ssc — extend to also clear coords state
     def reset_state(self):
-        """Reset SOC state and SSC EMA filter between independent runs."""
-        self.prev_coords = None
-        if self.ssc is not None:
-            self.ssc.reset()   # canonical reset from one_core_fold.SSC
+        """Reset SOC state, SSC EMA filter, and coordinate history."""
+        super().reset()                       # clears self.ssc via CSOCBase
+        self._prev_coords.zero_()
+        self._coords_ready.fill_(False)
+
+    # forward() required by CSOCBase abstract method
+    def forward(self, coords: torch.Tensor) -> torch.Tensor:
+        """Returns SSC-filtered structural stress (convenience entry point)."""
+        return self.sigma(coords)
 
     def compute_soc_energy(self, ca: torch.Tensor, alpha: torch.Tensor,
                            edge_idx: torch.Tensor, edge_dist: torch.Tensor,
