@@ -9,7 +9,7 @@
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20007526-blue)](https://doi.org/10.5281/zenodo.20007526)
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.19814975-blue)](https://doi.org/10.5281/zenodo.19814975)
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20194882-blue)](https://doi.org/10.5281/zenodo.20194882)
-[![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20571703-blue)](https://doi.org/10.5281/zenodo.20571703)
+[![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20609516-blue)](https://doi.org/10.5281/zenodo.20609516)
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20379088-blue)](https://doi.org/10.5281/zenodo.20379088)
 
 
@@ -282,7 +282,7 @@ additivity_scatter.png Additive vs double ΔΔG scatter
 Training the SOC Kernel
 
 ```bash
-python real_fold_one.py train --input native1.pdb native2.pdb --epochs 100 --output kernel_params.json
+python real_fold_one_v2.py train --input native1.pdb native2.pdb --epochs 100 --output kernel_params.json
 ```
 
 ---
@@ -523,7 +523,7 @@ Citing REAL FOLD ONE
 ```
 Yoon A Limsuwan. "REAL FOLD ONE: SOC‑Controlled Universal Refinement Engine."
 Zenodo, 2026.
-https://doi.org/10.5281/zenodo.20571703
+https://doi.org/10.5281/zenodo.20609516
 ```
 
 ---
