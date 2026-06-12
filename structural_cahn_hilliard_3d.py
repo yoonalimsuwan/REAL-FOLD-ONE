@@ -10,11 +10,13 @@
 # License      : MIT
 # Year         : 2026
 #
-# AI Assistants (development & mathematical derivation):
+# AI Co-Developers (mathematical derivation, GPU design, numerical audits):
 #   - Claude   (Anthropic)  — GPU-parallel Conv3d/FFT Laplacian design,
 #                             Thin-Film mobility, PFC operator architecture,
 #                             full differentiability audit, ONE Ecosystem
-#                             integration pattern, IMEX spectral scheme
+#                             integration pattern, IMEX spectral scheme,
+#                             one_core_fold cross-ecosystem import chain,
+#                             FoldCahnHilliardBridge coupling protocol
 #   - Gemini   (Google)     — initial operator scaffolding, structural operators
 #   - GPT      (OpenAI)     — literature cross-check, numerical stability advice
 #   - DeepSeek              — alternative stencil verification
@@ -105,7 +107,18 @@ warnings.filterwarnings("ignore")
 logger = logging.getLogger("CahnHilliard3D")
 
 # ---------------------------------------------------------------------------
-# Optional ONE Ecosystem core (graceful fallback for standalone use)
+# ONE Ecosystem core imports
+# Priority order:
+#   1. one_core         — SUPER DNS ONE ecosystem (primary home of CH3D)
+#   2. one_core_fold    — REAL FOLD ONE ecosystem  (cross-ecosystem coupling)
+#   3. standalone       — no dependencies (graceful fallback)
+#
+# When running inside the REAL FOLD ONE ecosystem (without one_core / DNS),
+# the FOLD core provides SemanticStateContraction, CSOCBase, etc. via the
+# same public API.  The FoldCahnHilliardBridge and CahnHilliardSSCAdapter
+# (defined in one_core_fold) are also made available here so that Fold-side
+# code can do:
+#   from structural_cahn_hilliard_3d import FoldCahnHilliardBridge
 # ---------------------------------------------------------------------------
 try:
     from one_core import (
@@ -118,12 +131,81 @@ try:
         ONE_VERSION,
     )
     _HAS_ONE_CORE = True
+    _HAS_ONE_CORE_FOLD = False
 except ImportError:
     _HAS_ONE_CORE = False
     ONE_VERSION   = "standalone"
     _CahnHilliardDNSBridgeCore = None
     _biharmonic_core           = None
-    logger.warning("one_core not found — running in standalone mode.")
+    # Attempt to satisfy shared-component imports from one_core_fold
+    # (REAL FOLD ONE ecosystem cross-coupling)
+    try:
+        from one_core_fold import (
+            SemanticStateContraction,
+            CSOCBase,
+            InterfaceDetectorBase,
+            FoldCahnHilliardBridge,
+            CahnHilliardSSCAdapter,
+            FOLD_VERSION,
+        )
+        _HAS_ONE_CORE_FOLD = True
+        ONE_VERSION        = FOLD_VERSION
+        logger.info(
+            "structural_cahn_hilliard_3d: running via one_core_fold "
+            "(REAL FOLD ONE cross-ecosystem mode)."
+        )
+    except ImportError:
+        _HAS_ONE_CORE_FOLD = False
+        FoldCahnHilliardBridge  = None  # type: ignore[assignment]
+        CahnHilliardSSCAdapter  = None  # type: ignore[assignment]
+        logger.warning("one_core and one_core_fold not found — running in standalone mode.")
+
+    # Standalone fallbacks for abstract bases (used only if neither core available)
+    if not _HAS_ONE_CORE_FOLD:
+        import torch.nn as _nn
+        from abc import ABC as _ABC, abstractmethod as _abstractmethod
+
+        class SemanticStateContraction(_nn.Module):  # type: ignore[no-redef]
+            """Standalone SSC fallback (identity — no EMA filtering)."""
+            def __init__(self, epsilon_fp=0.0028, sigma_target=1.0):
+                super().__init__()
+                self.eps    = epsilon_fp
+                self.target = sigma_target
+                self.register_buffer("prev_sigma",   torch.tensor(0.0))
+                self.register_buffer("_initialized", torch.tensor(False))
+            def reset(self):
+                self.prev_sigma.zero_()
+                self._initialized.fill_(False)
+            def forward(self, raw_sigma):
+                if self.prev_sigma.device != raw_sigma.device:
+                    self.prev_sigma   = self.prev_sigma.to(raw_sigma.device)
+                    self._initialized = self._initialized.to(raw_sigma.device)
+                if not self._initialized.item():
+                    self.prev_sigma.data = raw_sigma.detach()
+                    self._initialized.fill_(True)
+                    return raw_sigma
+                new_sigma = self.prev_sigma + self.eps * (raw_sigma - self.prev_sigma)
+                self.prev_sigma.data = new_sigma.detach()
+                return new_sigma
+
+        class CSOCBase(_nn.Module, _ABC):  # type: ignore[no-redef]
+            """Standalone CSOC base fallback."""
+            def __init__(self, sigma_target=1.0, epsilon_fp=0.0028, boost_factor=3.0):
+                super().__init__()
+                self.sigma_target = sigma_target
+                self.boost_factor = boost_factor
+                self.ssc = SemanticStateContraction(epsilon_fp, sigma_target)
+            def reset(self): self.ssc.reset()
+            def _normalised_deviation(self, sigma):
+                return (sigma - self.sigma_target) / max(self.sigma_target, 1e-12)
+            def _smooth_boost(self, dev): return torch.sigmoid(dev)
+            @_abstractmethod
+            def forward(self, *args, **kwargs): ...
+
+        class InterfaceDetectorBase(_nn.Module, _ABC):  # type: ignore[no-redef]
+            """Standalone interface detector base fallback."""
+            @_abstractmethod
+            def forward(self, *args, **kwargs) -> torch.Tensor: ...
 
 
 # =============================================================================
@@ -146,41 +228,46 @@ def _soft_abs(x: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
 # =============================================================================
 # [CORE-1]  Module-level utility: structural_biharmonic_n
 # =============================================================================
+# Canonical implementation lives in one_core_v3.py (structural_biharmonic_n).
+# If one_core is available we use that directly (imported as _biharmonic_core
+# above and aliased here).  The standalone fallback below is used only when
+# one_core cannot be imported (e.g. running this file in isolation).
 
-def structural_biharmonic_n(
-    field:        torch.Tensor,
-    sigma:        torch.Tensor,
-    n:            int,
-    laplacian_fn: Callable,
-) -> torch.Tensor:
-    """
-    Compute Delta_S^n u recursively.
+if _HAS_ONE_CORE or _HAS_ONE_CORE_FOLD:
+    if _HAS_ONE_CORE:
+        # Re-export the one_core canonical version under the public name.
+        structural_biharmonic_n = _biharmonic_core  # type: ignore[assignment]
+    else:
+        # one_core_fold doesn't export structural_biharmonic_n (DNS-only utility);
+        # use the standalone fallback below.
+        pass
+if not (_HAS_ONE_CORE and _biharmonic_core is not None):
+    # Standalone fallback — identical logic, no one_core dependency.
+    def structural_biharmonic_n(          # type: ignore[misc]
+        field:        torch.Tensor,
+        sigma:        torch.Tensor,
+        n:            int,
+        laplacian_fn: Callable,
+    ) -> torch.Tensor:
+        """
+        Compute Δ_S^n u recursively (standalone fallback).
 
-    Parameters
-    ----------
-    field        : (Nx, Ny, Nz) input field
-    sigma        : (Nx, Ny, Nz) structural regime field
-    n            : operator order (n=1 -> Delta_S u, n=2 -> Delta_S^2 u, ...)
-    laplacian_fn : callable(field, sigma) -> (Nx, Ny, Nz)
-                   typically solver._structural_laplacian
+        Normally provided by one_core.structural_biharmonic_n.
+        This fallback is activated only when one_core is unavailable.
 
-    Returns
-    -------
-    (Nx, Ny, Nz) = Delta_S^n field
-
-    Notes
-    -----
-    Exposed at module level so one_core.py and other ONE Ecosystem
-    cluster modules can call it without importing the full solver class.
-    This implements Section 3.1 (Recursive Structural Operators) of:
-    "Structural Higher-Order Differential Operators" (Limsuwan, 2026).
-    """
-    if n < 1:
-        raise ValueError(f"n must be >= 1; got {n}")
-    result = laplacian_fn(field, sigma)
-    for _ in range(n - 1):
-        result = laplacian_fn(result, sigma)
-    return result
+        Parameters
+        ----------
+        field        : (Nx, Ny, Nz) input field
+        sigma        : (Nx, Ny, Nz) structural regime field
+        n            : operator order (n≥1)
+        laplacian_fn : callable(field, sigma) → (Nx, Ny, Nz)
+        """
+        if n < 1:
+            raise ValueError(f"n must be >= 1; got {n}")
+        result = laplacian_fn(field, sigma)
+        for _ in range(n - 1):
+            result = laplacian_fn(result, sigma)
+        return result
 
 
 # =============================================================================
@@ -1064,84 +1151,96 @@ class PhaseFieldCrystal3D(StructuralCahnHilliard3D):
 # =============================================================================
 # 6.  CahnHilliardDNSBridge
 # =============================================================================
+# Canonical implementation lives in one_core_v3.py (CahnHilliardDNSBridge).
+# We re-export it here under the same name so code that does:
+#   from structural_cahn_hilliard_3d import CahnHilliardDNSBridge
+# gets the same (identical) object as:
+#   from one_core import CahnHilliardDNSBridge
+#
+# When one_core is unavailable (standalone mode) we provide a minimal
+# fallback that covers Pattern B (coupled_step) only; sync() is disabled.
 
-class CahnHilliardDNSBridge(nn.Module):
-    """
-    Two-way coupling: Cahn-Hilliard phase-field <-> CompressibleSolver (DNS).
+if _HAS_ONE_CORE:
+    # Direct re-export — no duplication.
+    CahnHilliardDNSBridge = _CahnHilliardDNSBridgeCore  # type: ignore[misc]
+else:
+    # Standalone fallback (no dns_solver / sync support).
+    class CahnHilliardDNSBridge(nn.Module):  # type: ignore[no-redef]
+        """
+        Minimal standalone fallback used when one_core_v3 is unavailable.
 
-    Coupling mechanisms
-    -------------------
-    1. Density modulation (CH -> DNS):
-         rho_eff = rho_B + (rho_A - rho_B) * 0.5*(u+1)
+        Supports Pattern B (coupled_step) only.
+        For full functionality including sync() and dns_solver coupling,
+        ensure one_core_v3.py is on the Python path.
 
-    2. Viscosity modulation (CH -> DNS):
-         nu_eff  = nu_B  + (nu_A  - nu_B)  * 0.5*(u+1)
+        Compatible with: StructuralCahnHilliard3D,
+                         ThinFilmStructuralCahnHilliard3D,
+                         PhaseFieldCrystal3D.
+        """
 
-    3. Korteweg capillary stress (CH <-> DNS, optional):
-         f_i = -kappa * rho_eff * (d mu_R / dx_i)
-       Injected as body-force into DNS momentum equations.
+        def __init__(
+            self,
+            ch_solver:         "StructuralCahnHilliard3D",
+            dns_solver=None,
+            rho_A:             float = 1.0,
+            rho_B:             float = 2.0,
+            nu_A:              float = 1e-3,
+            nu_B:              float = 1e-2,
+            korteweg_strength: float = 0.0,
+        ):
+            super().__init__()
+            self.ch                = ch_solver
+            self.dns               = dns_solver
+            self.rho_A             = rho_A
+            self.rho_B             = rho_B
+            self.nu_A              = nu_A
+            self.nu_B              = nu_B
+            self.korteweg_strength = korteweg_strength
 
-    Compatible with: StructuralCahnHilliard3D,
-                     ThinFilmStructuralCahnHilliard3D,
-                     PhaseFieldCrystal3D.
-    """
+        def effective_density(self, u: torch.Tensor) -> torch.Tensor:
+            phi = 0.5 * (u + 1.0)
+            return self.rho_B + (self.rho_A - self.rho_B) * phi
 
-    def __init__(
-        self,
-        ch_solver:          StructuralCahnHilliard3D,
-        rho_A:              float = 1.0,
-        rho_B:              float = 2.0,
-        nu_A:               float = 1e-3,
-        nu_B:               float = 1e-2,
-        korteweg_strength:  float = 0.0,
-    ):
-        super().__init__()
-        self.ch               = ch_solver
-        self.rho_A            = rho_A
-        self.rho_B            = rho_B
-        self.nu_A             = nu_A
-        self.nu_B             = nu_B
-        self.korteweg_strength = korteweg_strength
+        def effective_viscosity(self, u: torch.Tensor) -> torch.Tensor:
+            phi = 0.5 * (u + 1.0)
+            return self.nu_B + (self.nu_A - self.nu_B) * phi
 
-    def effective_density(self, u: torch.Tensor) -> torch.Tensor:
-        phi = 0.5 * (u + 1.0)
-        return self.rho_B + (self.rho_A - self.rho_B) * phi
+        def korteweg_force(
+            self,
+            u:     torch.Tensor,
+            sigma: Optional[torch.Tensor] = None,
+        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            if self.korteweg_strength == 0.0:
+                z = torch.zeros_like(u)
+                return z, z, z
+            sigma   = self.ch._resolve_sigma(u, sigma)
+            mu_R    = self.ch.compute_chemical_potential(u, sigma)
+            rho_eff = self.effective_density(u)
+            dx      = self.ch.cfg.dx
+            k       = self.korteweg_strength
+            dmx = (torch.roll(mu_R, -1, 0) - torch.roll(mu_R, +1, 0)) / (2 * dx)
+            dmy = (torch.roll(mu_R, -1, 1) - torch.roll(mu_R, +1, 1)) / (2 * dx)
+            dmz = (torch.roll(mu_R, -1, 2) - torch.roll(mu_R, +1, 2)) / (2 * dx)
+            return -k * rho_eff * dmx, -k * rho_eff * dmy, -k * rho_eff * dmz
 
-    def effective_viscosity(self, u: torch.Tensor) -> torch.Tensor:
-        phi = 0.5 * (u + 1.0)
-        return self.nu_B + (self.nu_A - self.nu_B) * phi
+        def sync(self, u: torch.Tensor, sigma: Optional[torch.Tensor] = None) -> None:
+            raise RuntimeError(
+                "CahnHilliardDNSBridge.sync() requires one_core_v3 "
+                "(dns_solver coupling). Add one_core_v3.py to your path."
+            )
 
-    def korteweg_force(
-        self,
-        u:     torch.Tensor,
-        sigma: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """f_i = -kappa * rho_eff * (d mu_R / dx_i)"""
-        if self.korteweg_strength == 0.0:
-            z = torch.zeros_like(u)
-            return z, z, z
-        sigma   = self.ch._resolve_sigma(u, sigma)
-        mu_R    = self.ch.compute_chemical_potential(u, sigma)
-        rho_eff = self.effective_density(u)
-        dx      = self.ch.cfg.dx
-        k       = self.korteweg_strength
-        dmx = (torch.roll(mu_R,-1,0) - torch.roll(mu_R,+1,0)) / (2*dx)
-        dmy = (torch.roll(mu_R,-1,1) - torch.roll(mu_R,+1,1)) / (2*dx)
-        dmz = (torch.roll(mu_R,-1,2) - torch.roll(mu_R,+1,2)) / (2*dx)
-        return -k*rho_eff*dmx, -k*rho_eff*dmy, -k*rho_eff*dmz
-
-    def coupled_step(
-        self,
-        u:     torch.Tensor,
-        sigma: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor,
-               torch.Tensor, torch.Tensor, torch.Tensor]:
-        """One CH step + DNS material fields.  Returns u_new, rho_eff, nu_eff, fx, fy, fz."""
-        u_new   = self.ch.step(u, sigma)
-        rho_eff = self.effective_density(u_new)
-        nu_eff  = self.effective_viscosity(u_new)
-        fx, fy, fz = self.korteweg_force(u_new, sigma)
-        return u_new, rho_eff, nu_eff, fx, fy, fz
+        def coupled_step(
+            self,
+            u:     torch.Tensor,
+            sigma: Optional[torch.Tensor] = None,
+        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor,
+                   torch.Tensor, torch.Tensor, torch.Tensor]:
+            """One CH step + all coupling fields. Returns u_new, rho_eff, nu_eff, fx, fy, fz."""
+            u_new   = self.ch.step(u, sigma)
+            rho_eff = self.effective_density(u_new)
+            nu_eff  = self.effective_viscosity(u_new)
+            fx, fy, fz = self.korteweg_force(u_new, sigma)
+            return u_new, rho_eff, nu_eff, fx, fy, fz
 
 
 # =============================================================================
