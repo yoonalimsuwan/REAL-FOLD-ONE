@@ -1,9 +1,26 @@
 # =============================================================================
 # LANGEVIN ADVANCED WITH STRUCTURAL CALCULUS
 # =============================================================================
-# Developer: Yoon A Limsuwan / MSPS NETWORK
-# License: MIT
-# Year: 2026
+# Developer    : Yoon A Limsuwan / MSPS NETWORK
+# License      : MIT
+# Year         : 2026
+# ORCID        : 0009-0008-2374-0788
+# GitHub       : yoonalimsuwan
+#
+# AI Co-Developers (mathematical derivation, architecture, numerical audits):
+#   - Claude   (Anthropic)  — BAOAB integrator full differentiability audit,
+#                             multiplicative noise gradient fix (G evaluated
+#                             inside autograd context), CSOCThermostat
+#                             temperature modulation design, InterfaceDetector
+#                             soft mask formulation, full_step() convenience
+#                             wrapper, cross-ecosystem integration with
+#                             FoldCahnHilliardBridge
+#   - GPT      (OpenAI)     — Leimkuhler-Matthews O-step exact integration
+#                             verification, friction/temperature unit advice
+#   - Gemini   (Google)     — BAOAB splitting method scaffolding,
+#                             structural operators review
+#   - DeepSeek              — alternative Langevin scheme comparison,
+#                             noise amplitude convergence analysis
 #
 # A Fully Differentiable, Higher-Order (BAOAB Splitting) Langevin Integrator
 # integrating the 4-Paper Structural Calculus Ecosystem:
@@ -32,6 +49,8 @@ from one_core_fold import (
     CSOCBase,                   # CSOC abstract base
     InterfaceDetectorBase,      # Interface detector abstract base
     StructuralItoBase,          # Structural Itô base (Papers 2 & 3)
+    FoldCahnHilliardBridge,     # REAL FOLD ONE ↔ StructuralCahnHilliard3D
+    CahnHilliardSSCAdapter,     # SSC adapter for CH3D attach_ssc()
     FOLD_VERSION,
 )
 
