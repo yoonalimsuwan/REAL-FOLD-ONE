@@ -11,6 +11,9 @@
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20194882-blue)](https://doi.org/10.5281/zenodo.20194882)
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20609516-blue)](https://doi.org/10.5281/zenodo.20609516)
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20379088-blue)](https://doi.org/10.5281/zenodo.20379088)
+[![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20633681-blue)](https://doi.org/10.5281/zenodo.20633681)
+[![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20623622-blue)](https://doi.org/10.5281/zenodo.20623622)
+
 
 
 A unified physics‑based framework for macromolecular refinement and mutational scanning.
