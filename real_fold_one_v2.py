@@ -1,9 +1,27 @@
 # =============================================================================
 # REAL FOLD ONE – Universal Full-Atom Native Differentiable Refinement Engine
 # =============================================================================
-# Author: Yoon A Limsuwan
-# License: MIT
-# Year: 2026
+# Author       : Yoon A Limsuwan
+# Organization : MSPS NETWORK
+# License      : MIT
+# Year         : 2026
+# ORCID        : 0009-0008-2374-0788
+# GitHub       : yoonalimsuwan
+#
+# AI Co-Developers (architecture, differentiability, numerical methods):
+#   - Claude   (Anthropic)  — native full differentiability design via
+#                             OpenMM-ML TorchForce, SOCController inheritance
+#                             fix, register_buffer patterns, LangevinBridge
+#                             architecture, openmm_solute_energy routing,
+#                             FoldCahnHilliardBridge coupling protocol,
+#                             full README_PLUS documentation
+#   - GPT      (OpenAI)     — OpenMM-ML API cross-check, AMBER force field
+#                             parameterisation guidance, Hessian compatibility
+#                             notes for second-order optimisation
+#   - Gemini   (Google)     — SOC kernel initial design, RG coarse-graining
+#                             architecture, multiscale refinement scaffolding
+#   - DeepSeek              — alternative SOC energy formulation review,
+#                             CSOC adaptive kernel verification
 #
 # REAL FOLD ONE is an end-to-end differentiable protein/nucleic acid refinement
 # engine blending atomic physics, self-organised criticality (SOC), deep-learning
@@ -94,6 +112,8 @@ from one_core_fold import (
     InterfaceDetectorBase,      # Interface detector abstract base
     StructuralItoBase,          # Structural Itô base (Papers 2 & 3)
     LangevinBridge,             # RefinementEngine ↔ AdvancedStructuralLangevin
+    FoldCahnHilliardBridge,     # REAL FOLD ONE ↔ StructuralCahnHilliard3D
+    CahnHilliardSSCAdapter,     # SSC adapter for CH3D attach_ssc()
     get_device as _core_get_device,
     FOLD_VERSION,
 )
