@@ -1,9 +1,26 @@
 # =============================================================================
 # REAL FOLD ONE HT — High‑Throughput Mutation & Epistasis Scanner
 # =============================================================================
-# Author: Yoon A Limsuwan
-# License: MIT
-# Year: 2026
+# Author       : Yoon A Limsuwan
+# Organization : MSPS NETWORK
+# License      : MIT
+# Year         : 2026
+# ORCID        : 0009-0008-2374-0788
+# GitHub       : yoonalimsuwan
+#
+# AI Co-Developers (architecture, HTRefinementEngine, numerical methods):
+#   - Claude   (Anthropic)  — HTRefinementEngine differentiable relax_local
+#                             design, full autograd-safe energy pipeline,
+#                             multi-GPU worker serialisation pattern,
+#                             epistasis additivity formulation,
+#                             LangevinBridge integration, cross-ecosystem
+#                             import chain (one_core_fold graceful fallback)
+#   - GPT      (OpenAI)     — Miyazawa-Jernigan contact potential guidance,
+#                             multi-chain boundary detection logic
+#   - Gemini   (Google)     — DNA/RNA stacking energy scaffolding,
+#                             Watson-Crick pairing energy design
+#   - DeepSeek              — alternative ΔΔG estimation schemes,
+#                             epistasis statistical analysis review
 #
 # First release of the REAL FOLD ONE HT module. Built on the full‑atom
 # differentiable refinement engine REAL FOLD ONE. Provides ultra‑fast
@@ -92,10 +109,20 @@ except ImportError:
 
 # ONE Core Fold — for direct use of bridge and shared components
 try:
-    from one_core_fold import LangevinBridge, SemanticStateContraction, FOLD_VERSION
+    from one_core_fold import (
+        LangevinBridge,
+        SemanticStateContraction,
+        FoldCahnHilliardBridge,
+        CahnHilliardSSCAdapter,
+        FOLD_VERSION,
+    )
+    _HAS_ONE_CORE_FOLD = True
 except ImportError:
-    logger.warning("one_core_fold not found — LangevinBridge unavailable.")
-    LangevinBridge = None
+    logger.warning("one_core_fold not found — LangevinBridge / FoldCahnHilliardBridge unavailable.")
+    LangevinBridge         = None
+    FoldCahnHilliardBridge = None
+    CahnHilliardSSCAdapter = None
+    _HAS_ONE_CORE_FOLD     = False
 
 # -----------------------------------------------------------------------------
 # Constants
