@@ -311,8 +311,8 @@ Outputs: full‑atom PDB, oxDNA top/dat files.
 
 Validation & Testing
 
-· Gradient check: python real_fold_one.py test
-· Structure validation: python real_fold_one.py validate --input refined.pdb --reference native.pdb
+· Gradient check: python real_fold_one_v2.py test
+· Structure validation: python real_fold_one_v2.py validate --input refined.pdb --reference native.pdb
   Reports initial/final energy, RMSD, clash score, Ramachandran outliers, rotamer outliers.
 
 ---
@@ -475,7 +475,7 @@ compute their effect on folding stability and electrostatic integrity.
   combine structural stability scores with regulatory impact scores,
   providing a unified picture of how duon mutations affect cellular function.
 · Population‑scale scanning – The high‑throughput mutation pipeline
-  (real_fold_one_ht.py) can scan thousands of cancer‑associated variants
+  (real_fold_one_ht_v2.py) can scan thousands of cancer‑associated variants
   in hours on a multi‑GPU cluster, generating structural scores that can
   be correlated with patient survival data, drug response, or evolutionary
   conservation.
@@ -499,7 +499,7 @@ data generator for training and improving structure predictors.
    RoseTTAFold, especially in loop regions and side‑chain packing where
    predictors often struggle.
 2. ΔΔG training sets
-   The high‑throughput mutation scanner (real_fold_one_ht.py) can evaluate
+   The high‑throughput mutation scanner (real_fold_one_ht_v2.py) can evaluate
    thousands of single mutations with full‑atom relaxation, producing large‑scale
    datasets of (mutation, ΔΔG) pairs. These can be used to train AI‑based
    stability predictors that run in constant time (O(1)) instead of requiring
