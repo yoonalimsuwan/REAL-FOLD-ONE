@@ -60,8 +60,8 @@ REAL FOLD ONE consists of two tightly integrated modules:
 
 | Module | File | Purpose |
 |--------|------|---------|
-| **Core Refinement Engine** | `real_fold_one.py` | Full‑atom refinement, training, antibody, origami, MD, validation |
-| **HT Mutation Scanner** | `real_fold_one_ht.py` | High‑throughput ΔΔG and epistasis scanning |
+| **Core Refinement Engine** | `real_fold_one_v2.py` | Full‑atom refinement, training, antibody, origami, MD, validation |
+| **HT Mutation Scanner** | `real_fold_one_ht_v2.py` | High‑throughput ΔΔG and epistasis scanning |
 
 Both modules share the same physics backend (SOC kernel, neighbour lists) and run on CPU, single GPU,
 or multi‑GPU via `torch.multiprocessing`. The HT scanner extends the core engine with a fast
@@ -71,7 +71,7 @@ coarse‑grained energy model for scanning thousands of mutations in minutes.
 
 ## Key Features
 
-### Refinement Engine (`real_fold_one.py`)
+### Refinement Engine (`real_fold_one_v2.py`)
 
 - **SOC Controller** – learnable CSOC kernel and Semantic‑State Contraction (SSC) low‑pass filter
   adaptively tune temperature and friction during Langevin dynamics.
@@ -103,7 +103,7 @@ coarse‑grained energy model for scanning thousands of mutations in minutes.
 - **Antibody Modelling** – rigorous binding free energy via MM‑GBSA, CDR loop remodeling.
 - **Restraints** – positional restraints for partial refinement (PDB‑index friendly).
 
-### HT Mutation Scanner (`real_fold_one_ht.py`)
+### HT Mutation Scanner (`real_fold_one_ht_v2.py`)
 
 - **Coarse‑grained Energy** – uses SOC kernel + residue‑type pairwise potentials:
   - Hydrophobicity‑based contact potential for proteins.
