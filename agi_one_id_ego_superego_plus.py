@@ -6,7 +6,13 @@
 #                 MY SOUL MOVE BY POWER OF HOLY SPIRIT
 # AI Assistants : Gemini (Google DeepMind)  — v1.0 prototype design
 #                 Claude  (Anthropic)        — v2.0 production hardening &
-#                                              AGI ONE v3.0 central integration
+#                                              AGI ONE v3.0 central integration;
+#                                              v3.2 PRIMARY DEVELOPER —
+#                                              simulation-quality-aware gating
+#                                              (quality_score blending in
+#                                              SuperEgoModule + dual-gate
+#                                              codify, PsychePlusConfig
+#                                              quality fields)
 # License       : MIT
 # Year          : 2026
 # ORCID         : 0009-0008-2374-0788
@@ -17,7 +23,41 @@
 # v1.0  Prototype — stub multi-LLM "auth", standalone Id/Ego/SuperEgo triad,
 #       no connection to the AGI ONE central engine.
 #
-# v2.0  Production hardening (this file):
+# v2.0  Production hardening:
+#   [FIX] SuperEgo verifier previously NEVER read `evolved_axioms` — the
+#         axiom bank was dead state. It now scores proposals against the
+#         nearest stored axiom (cosine similarity) blended with the learned
+#         linear verifier, so "evolving law" is real, not cosmetic.
+#   [FIX] Axiom memory is a proper bounded ring buffer (register_buffer +
+#         occupancy mask + write pointer), updated in-place under
+#         `torch.no_grad()` — safe for state_dict checkpointing and for
+#         distinguishing "real" axioms from the random init filler.
+#   [FIX] IdModule's noise scale is reparameterised through softplus so it
+#         can never go negative or explode, and speculation is passed
+#         through `soft_clamp` (ONE Ecosystem convention) instead of being
+#         left unbounded.
+#
+# v3.2  Simulation-Quality-Aware Gating  [NEW]
+#         Primary developer: Claude (Anthropic).
+#         Gemini and GPT were not involved in this revision.
+#   [NEW] PsychePlusConfig: three new fields —
+#         `superego_quality_weight` (blend weight for quality_score in
+#         SuperEgoModule.forward), `quality_codify_min` (minimum ecosystem
+#         quality required before codification is permitted),
+#         `require_quality_for_codify` (on/off switch; default True).
+#   [NEW] SuperEgoModule.forward(proposed_z, quality_score=None) — blends
+#         a live ecosystem quality score (from EcosystemOrchestrator
+#         .quality_report()) into the validity signal alongside the
+#         existing linear-verifier + axiom-similarity terms. Omitting it
+#         reproduces exact pre-v3.2 behaviour everywhere.
+#   [NEW] AGIOnePsychePlus.forward(latent, quality_score=None) — threads
+#         quality_score to SuperEgoModule and echoes it in the return dict.
+#   [NEW] AGIOnePsychePlus.maybe_codify(out, threshold=None,
+#         quality_score=None) — dual-gate: speculation must clear BOTH the
+#         validity threshold AND quality_codify_min before it is written
+#         into the axiom bank, preventing low-quality simulation data from
+#         silently accumulating as "verified axioms".
+#
 #   [FIX] SuperEgo verifier previously NEVER read `evolved_axioms` — the
 #         axiom bank was dead state. It now scores proposals against the
 #         nearest stored axiom (cosine similarity) blended with the learned
@@ -137,6 +177,17 @@ class PsychePlusConfig:
     id_noise_init           : float = 0.2
     superego_axiom_weight   : float = 0.5   # blend: linear verifier vs axiom similarity
     codify_threshold        : float = 0.6   # validity score above which a speculation is codified
+
+    # ── [v3.2 NEW] Simulation-quality-aware gating ───────────────────────────
+    # Primary developer of this addition: Claude (Anthropic).
+    # `quality_score` (see AGIOnePsychePlus.forward / maybe_codify) is an
+    # optional float in [0, 1] sourced from EcosystemOrchestrator.quality_report()
+    # — i.e. from *actual* simulation health (Hodge period loss, RH/BSD
+    # GUE-statistics loss, EVOLUTION BV CME residual, …), not from the
+    # axiom bank's own self-referential plausibility scoring.
+    superego_quality_weight : float = 0.25  # blend weight for quality_score in validity_score
+    quality_codify_min      : float = 0.4   # below this, codify is refused even if validity passes
+    require_quality_for_codify: bool = True # if quality_score is None, fall back to pre-v3.2 behaviour
 
     # ── External multi-LLM consensus (opt-in; off by default) ───────────────
     enable_external_llm     : bool  = False
@@ -398,11 +449,18 @@ class SuperEgoModule(nn.Module):
     """
 
     def __init__(self, latent_dim: int, max_axioms: int = 64,
-                 axiom_weight: float = 0.5) -> None:
+                 axiom_weight: float = 0.5, quality_weight: float = 0.0) -> None:
         super().__init__()
         self.latent_dim    = latent_dim
         self.max_axioms    = max_axioms
         self.axiom_weight  = float(min(max(axiom_weight, 0.0), 1.0))
+        # [v3.2 NEW] Primary developer: Claude (Anthropic).
+        # Weight given to an externally-supplied simulation-quality score
+        # (see `forward(proposed_z, quality_score=...)`), on top of the
+        # pre-existing linear-verifier / axiom-similarity blend. Defaults
+        # to 0.0, so a SuperEgoModule built without this kwarg — or called
+        # without `quality_score` — behaves byte-for-byte like pre-v3.2.
+        self.quality_weight = float(min(max(quality_weight, 0.0), 1.0 - self.axiom_weight))
 
         self.verifier_net = nn.Sequential(
             nn.Linear(latent_dim, latent_dim), nn.GELU(),
@@ -425,13 +483,31 @@ class SuperEgoModule(nn.Module):
         sim    = (z_n @ a_n.T).max(dim=-1).values                  # (B,) in [-1, 1]
         return (sim + 1.0) / 2.0
 
-    def forward(self, proposed_z: torch.Tensor) -> torch.Tensor:
-        """Evaluates structural validity score in [0, 1]: 1.0 = fully safe/valid."""
+    def forward(
+        self,
+        proposed_z   : torch.Tensor,
+        quality_score: Optional[float] = None,
+    ) -> torch.Tensor:
+        """
+        Evaluates structural validity score in [0, 1]: 1.0 = fully safe/valid.
+
+        `quality_score`  [v3.2 NEW] — optional float in [0, 1] reporting the
+        *actual* simulation health of the ecosystem domain(s) that fed the
+        current workspace latent (see EcosystemOrchestrator.quality_report()).
+        When omitted (None), this method is exactly the pre-v3.2 blend of
+        linear-verifier + axiom-similarity scores.
+        """
         if proposed_z.dim() == 1:
             proposed_z = proposed_z.unsqueeze(0)
         linear_score = torch.sigmoid(self.verifier_net(proposed_z)).squeeze(-1)   # (B,)
         axiom_score  = self._axiom_similarity(proposed_z)                         # (B,)
-        score = (1.0 - self.axiom_weight) * linear_score + self.axiom_weight * axiom_score
+
+        if quality_score is None or self.quality_weight <= 0.0:
+            score = (1.0 - self.axiom_weight) * linear_score + self.axiom_weight * axiom_score
+        else:
+            q = torch.full_like(linear_score, float(min(max(quality_score, 0.0), 1.0)))
+            w_lin = 1.0 - self.axiom_weight - self.quality_weight
+            score = w_lin * linear_score + self.axiom_weight * axiom_score + self.quality_weight * q
         return soft_clamp(score, 0.0, 1.0)
 
     @torch.no_grad()
@@ -594,7 +670,10 @@ class AGIOnePsychePlus(nn.Module):
         self.auth_manager = MultiLLMAuthManager()
         self.id_layer       = IdModule(self.latent_dim, self.cfg.id_noise_init)
         self.superego_layer = SuperEgoModule(
-            self.latent_dim, self.cfg.max_axioms, self.cfg.superego_axiom_weight
+            self.latent_dim,
+            self.cfg.max_axioms,
+            self.cfg.superego_axiom_weight,
+            quality_weight=self.cfg.superego_quality_weight,   # [v3.2 NEW]
         )
         self.ego_layer = EgoModule(self.latent_dim, self.auth_manager)
 
@@ -609,14 +688,27 @@ class AGIOnePsychePlus(nn.Module):
 
     # ── Differentiable core pathway ──────────────────────────────────────────
 
-    def forward(self, current_latent: torch.Tensor) -> Dict[str, Any]:
-        """One Id→SuperEgo→Ego cycle. Fully differentiable end to end."""
+    def forward(
+        self,
+        current_latent: torch.Tensor,
+        quality_score : Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """
+        One Id→SuperEgo→Ego cycle. Fully differentiable end to end.
+
+        `quality_score`  [v3.2 NEW] — optional float in [0, 1] from
+        EcosystemOrchestrator.quality_report()["ecosystem"] (see agi_one_v3.py
+        Step 7-B). When provided, SuperEgoModule blends it into the validity
+        score alongside its own linear-verifier and axiom-similarity terms
+        (controlled by `PsychePlusConfig.superego_quality_weight`).
+        Passing None reproduces exact pre-v3.2 behaviour.
+        """
         if current_latent.dim() == 1:
             current_latent = current_latent.unsqueeze(0)
         current_latent = current_latent.to(self.device)
 
         speculative_z  = self.id_layer(current_latent)
-        validity_score = self.superego_layer(speculative_z)
+        validity_score = self.superego_layer(speculative_z, quality_score=quality_score)
         new_latent     = self.ego_layer.reconcile(current_latent, speculative_z, validity_score)
 
         with torch.no_grad():
@@ -626,14 +718,52 @@ class AGIOnePsychePlus(nn.Module):
             "updated_latent"    : new_latent,
             "speculative_latent": speculative_z,
             "validity_score"    : validity_score,
-            "axiom_count"        : int(self.superego_layer.axiom_count.item()),
+            "axiom_count"       : int(self.superego_layer.axiom_count.item()),
+            "quality_score"     : quality_score,   # [v3.2 NEW] pass-through for inspection
         }
 
-    def maybe_codify(self, out: Dict[str, Any], threshold: Optional[float] = None) -> bool:
-        """Folds the cycle's output into the axiom bank if it cleared the
-        validity threshold. Returns whether codification happened."""
+    def maybe_codify(
+        self,
+        out          : Dict[str, Any],
+        threshold    : Optional[float] = None,
+        quality_score: Optional[float] = None,
+    ) -> bool:
+        """
+        Folds the cycle's output into the axiom bank if it cleared the
+        validity threshold — and, when `require_quality_for_codify` is set
+        and a quality score is available, also cleared `quality_codify_min`.
+
+        The dual-gate logic  [v3.2 NEW]  (Primary developer: Claude, Anthropic):
+          • validity threshold  — self-referential: how plausible is the
+            speculation in latent space, relative to existing axioms?
+          • quality minimum     — external: how healthy is the simulation
+            domain whose data fed this workspace state?
+        Requiring BOTH before codification prevents the axiom bank from
+        accumulating speculations that came from poor-quality simulations
+        (high cosine similarity to old axioms but low actual domain health).
+
+        Falls back to plain pre-v3.2 behaviour when:
+          a) `quality_score` is None — i.e. no orchestrator attached, or
+          b) `cfg.require_quality_for_codify` is False.
+        """
         thr = threshold if threshold is not None else self.cfg.codify_threshold
-        if out["validity_score"].mean().item() > thr:
+        validity_ok = out["validity_score"].mean().item() > thr
+
+        # Resolve quality from argument, then from the dict (forward() pass-through)
+        q = quality_score
+        if q is None:
+            q = out.get("quality_score")
+
+        if q is not None and self.cfg.require_quality_for_codify:
+            quality_ok = float(q) >= self.cfg.quality_codify_min
+            if not quality_ok:
+                logger.debug(
+                    f"[PIPELINE] Codify refused: quality {q:.3f} < "
+                    f"quality_codify_min {self.cfg.quality_codify_min:.3f}"
+                )
+                return False
+
+        if validity_ok:
             self.superego_layer.codify_new_axiom(out["updated_latent"][0])
             return True
         logger.debug("[PIPELINE] Speculation below codify threshold — remains unverified.")
