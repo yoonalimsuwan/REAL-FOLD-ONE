@@ -103,6 +103,23 @@
 #         psyche_layer        : AdamW  lr=3e-4  (Free Energy)
 #         loss_balancer       : Adam   lr=1e-3  (Kendall σ params)
 #
+# v3.1.0  AGI ONE : Id, Ego, Super Ego / Plus — full central integration:
+#   [NEW] AGIONE.psyche_plus — speculative-axiom evolution layer that
+#         complements PsycheExecutiveLayer's moment-to-moment safety gate
+#         with a slower, self-evolving "axiom bank" loop (see
+#         agi_one_id_ego_superego_plus.py). Runs every
+#         `psyche_plus_run_every_n_steps` and folds its (safety-gated)
+#         output back into the workspace latent.
+#   [NEW] Opt-in multi-LLM external consensus (Claude/Gemini/GPT). OFF by
+#         default — `psyche_plus_enable_external_llm=False` — so no AGI
+#         ONE deployment ever spends API credits without explicit consent.
+#         When enabled, calls are concurrent, timeout-bounded, and rate-
+#         limited via `psyche_plus_consult_every_n_steps`; every response
+#         is returned as a structured `ExternalConsensusResult`, never
+#         silently discarded.
+#   [NEW] AGIState.psyche_plus_validity / psyche_plus_axiom_count /
+#         psyche_plus_codified / external_consensus.
+#
 # =============================================================================
 # THEORETICAL FOUNDATIONS
 # ────────────────────────
@@ -149,6 +166,8 @@
 #   bsd_one.py            [NEW v2.0]          → Birch–Swinnerton-Dyer
 #   grh_one.py            [NEW v2.0]          → Generalized RH
 #   hodge_one.py          [NEW v2.0]          → Hodge Conjecture explorer
+#   agi_one_id_ego_superego_plus.py [NEW v3.1] → speculative-axiom evolution
+#                                               + opt-in multi-LLM consensus
 #
 # =============================================================================
 # OPEN SCIENCE & DATA PROVENANCE
@@ -199,7 +218,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("AGI_ONE_v2")
 
-AGI_ONE_VERSION: str = "3.0.0"
+AGI_ONE_VERSION: str = "3.1.0"
 
 # =============================================================================
 # ONE Ecosystem — Graceful Imports
@@ -270,6 +289,20 @@ try:
     logger.info("✓ psy_one_bridge_diff")
 except ImportError:
     HAS_PSY_BRIDGE = False
+
+# ── AGI ONE : Id, Ego, Super Ego / Plus  [v3.1 NEW] ──────────────────────────
+# Speculative-axiom evolution layer + opt-in multi-LLM external consensus.
+# Complements PsycheExecutiveLayer (moment-to-moment action safety) with a
+# slower hypothesis-evolution loop over the same workspace latent.
+try:
+    from agi_one_id_ego_superego_plus import (
+        AGIOnePsychePlus, PsychePlusConfig, ExternalConsensusResult,
+    )
+    HAS_PSYCHE_PLUS = True
+    logger.info("✓ agi_one_id_ego_superego_plus  [v3.1 NEW]")
+except ImportError:
+    HAS_PSYCHE_PLUS = False
+    logger.warning("✗ agi_one_id_ego_superego_plus not found — PsychePlus layer disabled")
 
 # ── Langevin bridges ──────────────────────────────────────────────────────────
 try:
@@ -604,6 +637,18 @@ class AGIConfig:
     gumbel_hard          : bool  = False
     anderson_depth       : int   = 5
     lambda_reg           : float = 2.5
+
+    # ── Psyche Plus: speculative-axiom evolution  [v3.1 NEW] ─────────────────
+    use_psyche_plus              : bool  = True
+    psyche_plus_max_axioms       : int   = 64
+    psyche_plus_axiom_weight     : float = 0.5
+    psyche_plus_codify_threshold : float = 0.6
+    psyche_plus_run_every_n_steps: int   = 5     # speculative cycle cadence
+    # External multi-LLM consensus is OFF by default — opt-in only, so no
+    # AGI ONE deployment ever spends API credits without explicit consent.
+    psyche_plus_enable_external_llm    : bool  = False
+    psyche_plus_consult_every_n_steps  : int   = 50
+    psyche_plus_llm_timeout_s          : float = 12.0
 
     # ── MPPI Planner [v2.0] ───────────────────────────────────────────────────
     mppi_n_samples       : int   = 1024
@@ -1021,7 +1066,6 @@ class StructuralLangevinDiffusion(nn.Module):
             x = soft_clamp(x, -10.0, 10.0)
 
         return x
-
 
 
 # =============================================================================
@@ -1648,7 +1692,6 @@ class PsycheExecutiveLayer(nn.Module):
             "psyche_state"    : psyche_state,
             "psy_loss"        : psy_loss,
         }
-
 
 
 # =============================================================================
@@ -2710,6 +2753,11 @@ class AGIState:
     math_latent          : Optional[torch.Tensor] = None
     total_loss           : Optional[torch.Tensor] = None
     csoc_n_layers        : Optional[int]          = None
+    # ── Psyche Plus  [v3.1 NEW] ───────────────────────────────────────────
+    psyche_plus_validity    : Optional[float]    = None
+    psyche_plus_axiom_count : Optional[int]      = None
+    psyche_plus_codified    : Optional[bool]      = None
+    external_consensus      : Optional[Any]       = None   # ExternalConsensusResult
 
     def summary(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
@@ -2724,6 +2772,12 @@ class AGIState:
             d["csoc_n_layers"] = self.csoc_n_layers
         if self.psyche_state and hasattr(self.psyche_state, "to_dict"):
             d["psyche"] = self.psyche_state.to_dict()
+        if self.psyche_plus_validity is not None:
+            d["psyche_plus_validity"] = round(self.psyche_plus_validity, 4)
+        if self.psyche_plus_axiom_count is not None:
+            d["psyche_plus_axiom_count"] = self.psyche_plus_axiom_count
+        if self.external_consensus is not None and hasattr(self.external_consensus, "to_dict"):
+            d["external_consensus"] = self.external_consensus.to_dict()
         if self.planned_action is not None:
             d["planned_action_norm"] = float(self.planned_action.norm().item())
         return d
@@ -2757,6 +2811,8 @@ class AGIONE(nn.Module):
     │  MPPIPlanner         ← importance-weighted trajectory opt        │
     │  MetaCognitionModule ← self-model + CSOC compute control        │
     │  PsycheExecutiveLayer← Id→Goal / Ego→Plan / Superego→Safety     │
+    │  PsychePlus          ← speculative-axiom evolution + multi-LLM  │
+    │                         consensus (opt-in)            [v3.1]    │
     │  MultiScaleIntegrator← 23 ONE Ecosystem modules                 │
     │  MathReasoningLayer  ← BSD / GRH / HODGE ONE                    │
     │  SSCStabilizer       ← per-layer latent stabilization           │
@@ -2845,6 +2901,24 @@ class AGIONE(nn.Module):
 
         # ── [9] Psyche Executive Layer (Id/Ego/Superego) ─────────────────────
         self.psyche_exec = PsycheExecutiveLayer(D, A, cfg, device)
+
+        # ── [9-B] Psyche Plus: speculative-axiom evolution  [v3.1 NEW] ───────
+        self.psyche_plus: Optional[Any] = None
+        if cfg.use_psyche_plus and HAS_PSYCHE_PLUS:
+            self.psyche_plus = AGIOnePsychePlus(
+                cfg=PsychePlusConfig(
+                    latent_dim            = D,
+                    max_axioms            = cfg.psyche_plus_max_axioms,
+                    superego_axiom_weight = cfg.psyche_plus_axiom_weight,
+                    codify_threshold      = cfg.psyche_plus_codify_threshold,
+                    enable_external_llm   = cfg.psyche_plus_enable_external_llm,
+                    consult_every_n_steps = cfg.psyche_plus_consult_every_n_steps,
+                    llm_timeout_s         = cfg.psyche_plus_llm_timeout_s,
+                    device                = device,
+                ),
+                device=device,
+            )
+            logger.info("✓ Psyche Plus speculative-axiom layer attached to AGI ONE core.")
 
         # ── [10] ONE Ecosystem Modules (preserved from v1.0) ─────────────────
         self.mental_one      = MentalONEEngine()    if cfg.use_mental_one  and HAS_MENTAL_ONE  else None
@@ -2956,6 +3030,7 @@ class AGIONE(nn.Module):
         5.  Math Reasoning → math_latent (BSD/GRH/HODGE)
         6.  Global Workspace (GWT) → workspace_state, winner
         7.  Psyche Executive → Id→goal, Ego→plan, Superego→safety
+        7B. Psyche Plus     → speculative-axiom evolution (opt-in LLM consensus)
         8.  DreamerV3 World Model → h, z, predictions
         9.  MPPI Planning  → planned_action (importance-weighted)
         10. Geometry-aware Diffusion → latent exploration
@@ -3018,6 +3093,36 @@ class AGIONE(nn.Module):
         state.executive_action = exec_out["executive_action"]
         state.safety_score     = float(exec_out["safety_score"].item())
         state.psyche_state     = exec_out.get("psyche_state")
+
+        # ── Step 7-B: Psyche Plus — speculative-axiom evolution [v3.1 NEW] ────
+        # Runs on a coarser cadence than every step (it mutates a persistent
+        # axiom bank, not a per-step control signal) and NEVER performs
+        # network I/O on its own — external consensus stays opt-in and
+        # rate-limited via `maybe_consult_external`.
+        if self.psyche_plus is not None and (
+            self._step % max(1, self.cfg.psyche_plus_run_every_n_steps) == 0
+        ):
+            try:
+                plus_out = self.psyche_plus(ws)
+                state.psyche_plus_validity    = float(plus_out["validity_score"].mean().item())
+                state.psyche_plus_axiom_count = plus_out["axiom_count"]
+                state.psyche_plus_codified    = self.psyche_plus.maybe_codify(plus_out)
+
+                # Fold the (safety-gated) speculative update back into the
+                # workspace state — SuperEgo's validity score already governs
+                # how much of the speculation survives via EgoModule.reconcile.
+                ws = plus_out["updated_latent"].squeeze(0)
+                state.workspace_state = ws
+
+                consensus = self.psyche_plus.maybe_consult_external(
+                    prompt=f"Review AGI ONE speculative hypothesis at step {self._step}; "
+                           f"reply with a one-sentence assessment and a "
+                           f"'confidence: 0.0-1.0' line."
+                )
+                if consensus is not None:
+                    state.external_consensus = consensus
+            except Exception as exc:
+                logger.debug(f"Psyche Plus cycle skipped this step: {exc}")
 
         # ── Step 8: DreamerV3 World Model ─────────────────────────────────────
         dummy_a = torch.zeros(1, self.cfg.action_dim, device=self.device)
@@ -3143,8 +3248,6 @@ class AGIONE(nn.Module):
             return total
         return zero
 
-
-
     # =========================================================================
     # UTILITY
     # =========================================================================
@@ -3168,6 +3271,7 @@ class AGIONE(nn.Module):
             "mppi_planner"           : True,
             "meta_cognition_csoc"    : True,
             "psyche_executive_layer" : True,
+            "psyche_plus_triad"      : self.psyche_plus is not None,
             "ssc_stabilizer"         : True,
             "interface_attention"    : True,
             "csoc_compute_ctrl"      : True,
@@ -3557,7 +3661,6 @@ class PCGradOptimizer:
     @property
     def param_groups(self):
         return self._opt.param_groups
-
 
 
 # =============================================================================
@@ -4066,10 +4169,12 @@ class AGITrainerV3:
             list(model.critic_net.parameters()),
             lr=1e-4, weight_decay=self.cfg.weight_decay,
         )
-        # Psyche Executive (Free Energy)
+        # Psyche Executive (Free Energy) + Psyche Plus  [v3.1: psyche_plus joins]
+        psyche_params = list(model.psyche_exec.parameters())
+        if getattr(model, "psyche_plus", None) is not None:
+            psyche_params += list(model.psyche_plus.parameters())
         self.opt_psyche = torch.optim.AdamW(
-            list(model.psyche_exec.parameters()),
-            lr=3e-4, weight_decay=self.cfg.weight_decay,
+            psyche_params, lr=3e-4, weight_decay=self.cfg.weight_decay,
         )
         # Language module (standard LLM fine-tune regime)
         lang_params = list(model.language.parameters()) if hasattr(model, "language") else []
@@ -4573,7 +4678,6 @@ class AGITrainerV3:
         print(f"{'='*65}\n")
 
 
-
 # =============================================================================
 # SECTION 19 — CONVENIENCE FACTORY
 # =============================================================================
@@ -4584,6 +4688,7 @@ def create_agi_one(
     use_all_modules  : bool = True,
     psyche_mode      : str  = "healthy",
     language_backend : str  = "builtin",
+    use_psyche_plus  : bool = True,
     device           : Optional[str] = None,
     verbose          : bool = True,
 ) -> AGIONE:
@@ -4611,6 +4716,7 @@ def create_agi_one(
         use_bsd          = use_all_modules,
         use_grh          = use_all_modules,
         use_hodge        = use_all_modules,
+        use_psyche_plus  = use_psyche_plus,
         verbose          = verbose,
         mppi_n_samples   = 256,   # factory default: lighter
         cem_n_iters      = 0,     # unused in v2.0
@@ -4646,6 +4752,8 @@ if __name__ == "__main__":
     )
     # Override MPPI for speed in smoke test
     agi.mppi.n_samples = 16
+    # Run Psyche Plus every step so the smoke test actually exercises it
+    agi.cfg.psyche_plus_run_every_n_steps = 1
 
     # ── [2] Text input ────────────────────────────────────────────────────────
     print("[TEST 1] Text input (token IDs)")
@@ -4659,6 +4767,10 @@ if __name__ == "__main__":
     if st.meta_cognition:
         print(f"  Cognitive load   : {st.meta_cognition['cognitive_load']:.3f}")
         print(f"  Epistemic unc    : {st.meta_cognition['epistemic_unc']:.3f}")
+    if st.psyche_plus_validity is not None:
+        print(f"  PsychePlus valid : {st.psyche_plus_validity:.3f}")
+        print(f"  PsychePlus axioms: {st.psyche_plus_axiom_count}")
+        print(f"  PsychePlus codify: {st.psyche_plus_codified}")
 
     # ── [3] Time-series input ─────────────────────────────────────────────────
     print("\n[TEST 2] Time-series (EEG)")
