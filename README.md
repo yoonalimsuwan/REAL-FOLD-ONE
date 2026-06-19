@@ -188,7 +188,7 @@ Quick Start – Refinement Engine
 python real_fold_one_v2.py refine --input 1abc.pdb --output refined.pdb --steps 300
 
 # Explicit solvent, PME, GPU, and Langevin dynamics
-python real_fold_one.py refine -i 1abc.pdb -o refined.pdb --steps 500 --gpu --solvate --langevin
+python real_fold_one_v2.py refine -i 1abc.pdb -o refined.pdb --steps 500 --gpu --solvate --langevin
 
 # Include ligand SMILES
 python real_fold_one_v2.py refine -i protein.pdb --ligand-smiles '{"LIG":"c1ccccc1"}' -o complex.pdb
