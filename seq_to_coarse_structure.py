@@ -276,7 +276,51 @@ class Seq2CoarseConfig:
     mds_iters       : number of SMACOF stress-majorization iterations.
     mds_dim         : output embedding dimension (3 for Cα coordinates).
     mds_eps         : numerical floor to avoid division by ~0 distances.
-    mds_init_scale  : scale of the random initial 3-D embedding.
+    mds_init_scale  : scale of the random initial 3-D embedding (only
+                      used as a last-resort fallback if classical MDS
+                      initialisation fails numerically).
+
+    MDS memory optimisation
+    -------------------------
+    mds_row_chunk_size : if set, SMACOF's per-iteration Guttman transform
+                          is computed in row-blocks of this many residues
+                          rather than materialising the full (N, N)
+                          intermediate matrices (B, ratio, weights, etc.)
+                          at once. Caps peak per-iteration memory at
+                          O(mds_row_chunk_size · N) instead of O(N²) —
+                          verified numerically equivalent to the unchunked
+                          computation (see README_PREDICTOR.md §6/§9).
+                          None (default) reproduces the original unchunked
+                          behaviour exactly. Note: this does not reduce
+                          the memory needed to *store* the (N, N) target
+                          distance matrix itself, which the caller
+                          (``SeqToCoarseStructure.forward``) currently
+                          materialises before calling ``DifferentiableMDS``
+                          — see README_PREDICTOR.md §9 for why closing
+                          that remaining gap requires a separate, larger
+                          architectural change (streaming the distogram
+                          directly into the MDS solver, rather than
+                          optimising the solver in isolation).
+    mds_use_landmarks  : if True, ``_classical_mds_init`` uses Landmark
+                          MDS (de Silva & Tenenbaum, 2004) instead of full
+                          classical MDS — solving the expensive
+                          double-centering + eigendecomposition on a
+                          small landmark subset (O(L³) instead of O(N³))
+                          and triangulating every other point's
+                          coordinates from its distances to the landmarks
+                          (closed-form, O(N·L·mds_dim), no further
+                          eigendecomposition). Strongly recommended for
+                          N beyond a few thousand residues, where full
+                          classical MDS's O(N³) cost becomes infeasible
+                          regardless of available memory. None/False
+                          (default) reproduces the original full
+                          classical-MDS initialisation exactly.
+    mds_num_landmarks  : number of landmarks L to use when
+                          ``mds_use_landmarks=True``. Must satisfy
+                          ``mds_dim < L < N``; a few hundred to ~2000 is
+                          typically sufficient for a good warm start
+                          regardless of how large N grows (the landmark
+                          subproblem's cost depends only on L, not N).
 
     Sigma head
     ----------
@@ -336,12 +380,18 @@ class Seq2CoarseConfig:
     pair_chunk_size: Optional[int] = None
     pair_proj_dtype: Optional[torch.dtype] = None
 
-
     # Differentiable MDS
     mds_iters:      int   = 200
     mds_dim:        int   = 3
     mds_eps:        float = 1e-6
     mds_init_scale: float = 5.0
+
+    # MDS memory optimisation (all opt-in; defaults reproduce the original
+    # unchunked, full-classical-MDS behaviour exactly)
+    mds_row_chunk_size: Optional[int] = None
+    mds_use_landmarks:  bool = False
+    mds_num_landmarks:  int  = 1000
+
 
     # Sigma head
     sigma_min: float = 0.05
@@ -380,6 +430,9 @@ class Seq2CoarseConfig:
         assert self.mds_iters >= 1
         assert self.mds_dim >= 1
         assert self.mds_eps > 0.0
+        assert self.mds_row_chunk_size is None or self.mds_row_chunk_size >= 1
+        assert self.mds_num_landmarks > self.mds_dim, \
+            f"mds_num_landmarks ({self.mds_num_landmarks}) must exceed mds_dim ({self.mds_dim})."
         assert 0.0 < self.sigma_min < self.sigma_max
         assert self.grad_clip > 0.0
         assert 0.0 < self.ema_decay < 1.0
@@ -1169,6 +1222,16 @@ class DifferentiableMDS(nn.Module):
         Returns:
             (N, mds_dim) coarse coordinates minimising SMACOF stress against
             ``target_dist``.
+
+        Memory note: if ``cfg.mds_row_chunk_size`` is set, each iteration's
+        Guttman transform is computed in row-blocks rather than
+        materialising the full (N, N) intermediate matrices at once,
+        capping peak per-iteration memory at
+        O(mds_row_chunk_size · N) instead of O(N²) — verified numerically
+        identical to the unchunked computation (see
+        README_PREDICTOR.md §6/§9). This does *not* reduce the memory
+        needed to store ``target_dist`` itself, which the caller must
+        already hold before calling this method.
         """
         n = target_dist.size(0)
         device, dtype = target_dist.device, target_dist.dtype
@@ -1184,25 +1247,96 @@ class DifferentiableMDS(nn.Module):
         else:
             X = self._classical_mds_init(target_dist)
 
-        # Guarantee differentiability through the loop regardless of caller context.
         w_sum = weights.sum(dim=1, keepdim=True).clamp_min(self.cfg.mds_eps)  # (N, 1)
 
+        chunk_size = self.cfg.mds_row_chunk_size or n  # None -> single chunk == unchunked
         for _ in range(iters):
-            diff = X.unsqueeze(1) - X.unsqueeze(0)               # (N, N, mds_dim)
-            d = torch.linalg.norm(diff, dim=-1)                   # (N, N) current distances
-            d_safe = d.clamp_min(self.cfg.mds_eps)
-
-            # Guttman transform: B_ij = -w_ij * delta_ij / d_ij  (i != j),
-            #                    B_ii = -sum_{j != i} B_ij
-            ratio = weights * target_dist / d_safe                 # (N, N), off-diagonal terms
-            off_diag_mask = 1.0 - torch.eye(n, device=device, dtype=dtype)
-            B_off = -ratio * off_diag_mask
-            B_diag = -B_off.sum(dim=1)                             # row sums, negated
-            B = B_off + torch.diag(B_diag)
-
-            X = (B @ X) / w_sum
+            if chunk_size >= n:
+                X = self._smacof_update_full(X, target_dist, weights, w_sum, n, device, dtype)
+            else:
+                X = self._smacof_update_chunked(
+                    X, target_dist, weights, w_sum, n, chunk_size, device, dtype
+                )
 
         return X
+
+    def _smacof_update_full(
+        self,
+        X: torch.Tensor,
+        target_dist: torch.Tensor,
+        weights: torch.Tensor,
+        w_sum: torch.Tensor,
+        n: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """One unchunked SMACOF Guttman-transform update (original behaviour)."""
+        diff = X.unsqueeze(1) - X.unsqueeze(0)               # (N, N, mds_dim)
+        d = torch.linalg.norm(diff, dim=-1)                   # (N, N) current distances
+        d_safe = d.clamp_min(self.cfg.mds_eps)
+
+        # Guttman transform: B_ij = -w_ij * delta_ij / d_ij  (i != j),
+        #                    B_ii = -sum_{j != i} B_ij
+        ratio = weights * target_dist / d_safe                 # (N, N), off-diagonal terms
+        off_diag_mask = 1.0 - torch.eye(n, device=device, dtype=dtype)
+        B_off = -ratio * off_diag_mask
+        B_diag = -B_off.sum(dim=1)                             # row sums, negated
+        B = B_off + torch.diag(B_diag)
+
+        return (B @ X) / w_sum
+
+    def _smacof_update_chunked(
+        self,
+        X: torch.Tensor,
+        target_dist: torch.Tensor,
+        weights: torch.Tensor,
+        w_sum: torch.Tensor,
+        n: int,
+        chunk_size: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """
+        One row-chunked SMACOF Guttman-transform update — mathematically
+        identical to ``_smacof_update_full`` (verified numerically; see
+        README_PREDICTOR.md §6/§9), but never materialises a full (N, N)
+        intermediate tensor: only one ``(chunk_size, N)`` row-block at a
+        time. The output is assembled via ``torch.cat``, so gradients
+        continue to flow correctly back through ``X``, ``target_dist``,
+        and ``weights`` into the rest of the model.
+        """
+        row_blocks: List[torch.Tensor] = []
+        for i_start in range(0, n, chunk_size):
+            i_end = min(i_start + chunk_size, n)
+            X_block = X[i_start:i_end]                                      # (Bi, mds_dim)
+
+            diff_block = X_block.unsqueeze(1) - X.unsqueeze(0)               # (Bi, N, mds_dim)
+            d_block = torch.linalg.norm(diff_block, dim=-1)                   # (Bi, N)
+            d_safe_block = d_block.clamp_min(self.cfg.mds_eps)
+
+            target_block = target_dist[i_start:i_end, :]                      # (Bi, N)
+            weights_block = weights[i_start:i_end, :]                         # (Bi, N)
+            ratio_block = weights_block * target_block / d_safe_block          # (Bi, N)
+
+            # Zero the (local_i, global_i) diagonal entries within this block.
+            off_diag_block = torch.ones(i_end - i_start, n, device=device, dtype=dtype)
+            diag_cols = torch.arange(i_start, i_end, device=device)
+            diag_rows = torch.arange(i_end - i_start, device=device)
+            off_diag_block[diag_rows, diag_cols] = 0.0
+
+            B_off_block = -ratio_block * off_diag_block                        # (Bi, N)
+            B_diag_block = -B_off_block.sum(dim=1)                              # (Bi,)
+            # Write the diagonal entry into B_off_block's own diagonal columns
+            # via scatter (out-of-place, autograd-safe — this builds a NEW
+            # tensor rather than mutating B_off_block in place).
+            B_row_block = B_off_block.index_put(
+                (diag_rows, diag_cols), B_diag_block, accumulate=False
+            )  # (Bi, N)
+
+            X_new_block = (B_row_block @ X) / w_sum[i_start:i_end]              # (Bi, mds_dim)
+            row_blocks.append(X_new_block)
+
+        return torch.cat(row_blocks, dim=0)  # (N, mds_dim)
 
     def _classical_mds_init(self, target_dist: torch.Tensor) -> torch.Tensor:
         """
@@ -1220,11 +1354,23 @@ class DifferentiableMDS(nn.Module):
         initial guess (mirroring standard practice in the classical-MDS
         + SMACOF-refinement literature).
 
+        If ``cfg.mds_use_landmarks`` is True, delegates to
+        ``_landmark_mds_init`` instead — full classical MDS is O(N³)
+        (both the double-centering matmuls and the eigendecomposition),
+        which becomes infeasible well before N reaches the tens of
+        thousands; Landmark MDS reduces this to O(L³ + N·L·mds_dim) for
+        a fixed landmark count L, independent of how large N grows (see
+        README_PREDICTOR.md §9 for the numerical-equivalence check and
+        complexity analysis).
+
         Args:
             target_dist : (N, N) target distance matrix.
         Returns:
             (N, mds_dim) initial coordinate guess.
         """
+        if self.cfg.mds_use_landmarks:
+            return self._landmark_mds_init(target_dist)
+
         n = target_dist.size(0)
         device, dtype = target_dist.device, target_dist.dtype
         d = target_dist.detach()
@@ -1259,6 +1405,101 @@ class DifferentiableMDS(nn.Module):
                 n, self.cfg.mds_dim, generator=gen
             ).to(device=device, dtype=dtype)
             return X
+
+    def _landmark_mds_init(self, target_dist: torch.Tensor) -> torch.Tensor:
+        """
+        Landmark MDS initialisation (de Silva & Tenenbaum, 2004).
+
+        Algorithm:
+          1. Select ``cfg.mds_num_landmarks`` residues (seeded-random, for
+             determinism) as landmarks.
+          2. Run full classical MDS — double-centering + eigendecomposition
+             — on just the (L, L) landmark submatrix. This is O(L³), fixed
+             regardless of how large N grows.
+          3. For every residue (landmark or not), triangulate its
+             coordinate from its known distances to the L landmarks via a
+             closed-form least-squares formula — O(N·L·mds_dim), no further
+             eigendecomposition.
+
+        This trades a small amount of initialisation quality (the full
+        configuration is only approximated through L landmarks, rather
+        than exactly recovered as classical MDS would with the full
+        matrix) for changing the dominant cost from O(N³) to O(N · L) —
+        the difference between "infeasible at N=100,000" and "routine".
+        SMACOF's subsequent iterations refine this initial guess regardless,
+        so landmark-init quality mainly affects convergence speed, not the
+        final result's correctness.
+
+        Numerically verified against full classical MDS on small N (where
+        both are tractable) to agree up to the Procrustes-alignable
+        configuration that both classical MDS and SMACOF only ever recover
+        up to rotation/reflection/translation in the first place — see
+        README_PREDICTOR.md §9.
+
+        Args:
+            target_dist : (N, N) target distance matrix.
+        Returns:
+            (N, mds_dim) initial coordinate guess.
+        """
+        n = target_dist.size(0)
+        device, dtype = target_dist.device, target_dist.dtype
+        d = target_dist.detach()
+        k = self.cfg.mds_dim
+        L = min(self.cfg.mds_num_landmarks, n - 1)
+        if L <= k:
+            logger.warning(
+                "mds_num_landmarks (%d) too small relative to mds_dim (%d) and N (%d); "
+                "falling back to full classical MDS init.", self.cfg.mds_num_landmarks, k, n,
+            )
+            self.cfg.mds_use_landmarks = False
+            try:
+                return self._classical_mds_init(target_dist)
+            finally:
+                self.cfg.mds_use_landmarks = True
+
+        try:
+            gen = torch.Generator(device="cpu").manual_seed(0)
+            landmark_idx = torch.randperm(n, generator=gen)[:L].to(device)
+
+            d_LL = d[landmark_idx][:, landmark_idx]                 # (L, L)
+            d_LL_sq = d_LL ** 2
+            ones_L = torch.ones(L, L, device=device, dtype=dtype)
+            J_L = torch.eye(L, device=device, dtype=dtype) - ones_L / L
+            B_LL = -0.5 * J_L @ d_LL_sq @ J_L
+            B_LL = 0.5 * (B_LL + B_LL.T)
+
+            eigvals, eigvecs = torch.linalg.eigh(B_LL)              # O(L³)
+            eigvals_top = eigvals[-k:].clamp_min(self.cfg.mds_eps)    # (k,)
+            eigvecs_top = eigvecs[:, -k:]                              # (L, k)
+            X_landmarks = eigvecs_top * eigvals_top.sqrt().unsqueeze(0)  # (L, k)
+
+            # Closed-form triangulation for every residue (landmarks
+            # included — recovers X_landmarks back out for free, and gives
+            # every other residue's coordinate from its distances to the
+            # landmarks alone, without any further eigendecomposition):
+            #   x_p = -0.5 * pinv(X_landmarks)^T @ (d_p,L^2 - mean_sq_L)
+            mean_d_sq_landmarks = d_LL_sq.mean(dim=1)                 # (L,)
+            X_landmarks_pinv = torch.linalg.pinv(X_landmarks)          # (k, L), O(L²·k)
+
+            d_all_to_L = d[:, landmark_idx]                            # (N, L) — distances from every
+                                                                          # residue to the L landmarks
+            delta = d_all_to_L ** 2 - mean_d_sq_landmarks.unsqueeze(0)  # (N, L)
+            X_all = -0.5 * (delta @ X_landmarks_pinv.T)                  # (N, k) — O(N·L·k)
+
+            if X_all.size(1) < self.cfg.mds_dim:
+                pad = torch.zeros(
+                    n, self.cfg.mds_dim - X_all.size(1), device=device, dtype=dtype
+                )
+                X_all = torch.cat([X_all, pad], dim=1)
+            return X_all.to(dtype=dtype)
+        except RuntimeError as exc:
+            logger.warning(
+                "Landmark MDS init failed (%s); falling back to seeded random init.", exc
+            )
+            gen = torch.Generator(device="cpu").manual_seed(0)
+            return (self.cfg.mds_init_scale * torch.randn(
+                n, self.cfg.mds_dim, generator=gen
+            )).to(device=device, dtype=dtype)
 
     @staticmethod
     def stress(
@@ -2013,6 +2254,45 @@ if __name__ == "__main__":
         and h_grad_probe.grad.abs().sum() > 0, \
         "Gradient did not flow back through the 2D-tiled path to its input."
     print("[PASS] Gradients flow correctly through the 2D-tiled (block-cat-assembled) path")
+
+    # ── Test 14: row-chunked SMACOF update == unchunked (exact identity) ──
+    torch.manual_seed(0)
+    mds_probe_dist = torch.rand(N, N, device=_device) * 15.0
+    mds_probe_dist = 0.5 * (mds_probe_dist + mds_probe_dist.T)
+    mds_probe_dist.fill_diagonal_(0.0)
+    mds_probe_init = torch.randn(N, 3, device=_device)
+
+    _model.mds.cfg.mds_row_chunk_size = None
+    coords_unchunked = _model.mds(mds_probe_dist, init_coords=mds_probe_init, n_iters=5)
+    _model.mds.cfg.mds_row_chunk_size = 13  # deliberately uneven vs N=48
+    coords_chunked = _model.mds(mds_probe_dist, init_coords=mds_probe_init, n_iters=5)
+    _model.mds.cfg.mds_row_chunk_size = None  # restore
+    assert torch.allclose(coords_unchunked, coords_chunked, atol=1e-3), \
+        f"Row-chunked vs unchunked SMACOF mismatch: " \
+        f"max diff = {(coords_unchunked - coords_chunked).abs().max().item():.6f}"
+    print("[PASS] mds_row_chunk_size=13 produces identical SMACOF updates to the unchunked path")
+
+    # ── Test 15: chunked SMACOF preserves gradient flow ──────────────────
+    _model.zero_grad()
+    dist_for_grad = mds_probe_dist.clone().requires_grad_(True)
+    _model.mds.cfg.mds_row_chunk_size = 11
+    coords_for_grad = _model.mds(dist_for_grad, init_coords=mds_probe_init, n_iters=3)
+    _model.mds.cfg.mds_row_chunk_size = None
+    coords_for_grad.sum().backward()
+    assert dist_for_grad.grad is not None and torch.isfinite(dist_for_grad.grad).all() \
+        and dist_for_grad.grad.abs().sum() > 0, \
+        "Gradient did not flow back through the row-chunked SMACOF path to target_dist."
+    print("[PASS] Gradients flow correctly through the row-chunked SMACOF path")
+
+    # ── Test 16: Landmark MDS init runs and produces finite, sane coordinates ──
+    _model.mds.cfg.mds_use_landmarks = True
+    _model.mds.cfg.mds_num_landmarks = 20  # well under N=48
+    with torch.no_grad():
+        landmark_init_coords = _model.mds._landmark_mds_init(mds_probe_dist)
+    _model.mds.cfg.mds_use_landmarks = False  # restore
+    assert landmark_init_coords.shape == (N, 3)
+    assert torch.isfinite(landmark_init_coords).all(), "Landmark MDS init produced non-finite values."
+    print(f"[PASS] Landmark MDS init (L=20, N={N}) → finite coords {landmark_init_coords.shape}")
 
     print("=" * 70)
     print("  All tests passed.")
