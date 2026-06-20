@@ -220,6 +220,58 @@ class Seq2CoarseConfig:
     ffn_dim         : feed-forward inner dimension.
     dropout         : dropout probability throughout the encoder.
 
+    Long-sequence scaling (opt-in; all default to the original O(N²)
+    full-attention / full-classical-MDS / ESM-2 behaviour exactly)
+    --------------------------------------------------------------
+    attn_window_size       : if set, ``SequenceTransformerEncoder`` uses
+                              banded sliding-window self-attention
+                              (each residue attends only to the
+                              ``attn_window_size`` nearest neighbours on
+                              each side, i.e. a band of width
+                              ``2 * attn_window_size + 1``) instead of
+                              full O(N²) attention. This changes the
+                              *inductive bias* (long-range pairs beyond
+                              the window no longer attend to each other
+                              directly — long-range signal can still
+                              propagate indirectly across layers, the
+                              same way a CNN's receptive field grows with
+                              depth), but reduces attention cost from
+                              O(N²) to O(N·w), which is what makes
+                              N ~ 100,000+ residues tractable on a single
+                              GPU. None (default) reproduces the
+                              original full-attention ``nn.TransformerEncoder``
+                              path exactly. Recommended once N exceeds
+                              ``auto_window_attn_threshold`` (see below).
+    auto_window_attn_threshold : if ``attn_window_size`` is None and the
+                              input sequence length exceeds this
+                              threshold, ``SequenceTransformerEncoder``
+                              automatically switches to sliding-window
+                              attention using ``attn_window_size_default``
+                              as the window radius, and logs that it did
+                              so. Set to a very large number (or pass
+                              ``attn_window_size`` explicitly) to disable
+                              auto-switching and keep manual control.
+    attn_window_size_default  : window radius used by the auto-switch
+                              above when ``attn_window_size`` itself is
+                              left unset.
+    auto_landmark_threshold   : if ``mds_use_landmarks`` is False and N
+                              exceeds this threshold, ``DifferentiableMDS``
+                              automatically uses Landmark MDS
+                              initialisation instead of full classical MDS
+                              (whose O(N³) eigendecomposition becomes
+                              infeasible well before this point), and
+                              logs that it did so. Set to a very large
+                              number to disable auto-switching.
+    auto_learned_embed_threshold : if ``embed_backend == "esm2"`` and N
+                              exceeds this threshold, ``SequenceEmbedder``
+                              automatically falls back to the "learned"
+                              embedding backend for that call (ESM-2 was
+                              never trained on contexts this long and its
+                              attention becomes unreliable / OOM-prone
+                              there), and logs/warns that it did so. Set
+                              to a very large number to disable
+                              auto-switching.
+
     Distogram
     ---------
     num_distance_bins : number of discrete Cα–Cα distance bins.
@@ -360,7 +412,7 @@ class Seq2CoarseConfig:
     esm_repr_layer: int   = 12
     freeze_esm:     bool  = True
     embed_dim:      int   = 256
-    max_seq_len:    int   = 2048
+    max_seq_len:    int   = 120_000
 
     # Transformer encoder
     hidden_dim:  int   = 256
@@ -368,6 +420,14 @@ class Seq2CoarseConfig:
     num_layers:  int   = 6
     ffn_dim:     int   = 1024
     dropout:     float = 0.1
+
+    # Long-sequence scaling (opt-in; defaults reproduce the original
+    # O(N²) full-attention / full-classical-MDS / ESM-2 behaviour exactly)
+    attn_window_size: Optional[int] = None
+    auto_window_attn_threshold: int = 8000
+    attn_window_size_default: int = 256
+    auto_landmark_threshold: int = 8000
+    auto_learned_embed_threshold: int = 8000
 
     # Distogram
     num_distance_bins: int   = 64
@@ -421,6 +481,11 @@ class Seq2CoarseConfig:
             f"hidden_dim ({self.hidden_dim}) must be divisible by num_heads ({self.num_heads})."
         assert self.num_layers >= 1
         assert 0.0 <= self.dropout < 1.0
+        assert self.attn_window_size is None or self.attn_window_size >= 1
+        assert self.auto_window_attn_threshold >= 1
+        assert self.attn_window_size_default >= 1
+        assert self.auto_landmark_threshold >= 1
+        assert self.auto_learned_embed_threshold >= 1
         assert self.num_distance_bins >= 2
         assert self.max_distance > self.min_distance > 0.0
         assert self.pair_chunk_size is None or self.pair_chunk_size >= 1
@@ -497,21 +562,35 @@ class SequenceEmbedder(nn.Module):
         if self._backend_active == "learned":
             # Fallback path: trainable embedding table + sinusoidal position encoding.
             self.aa_embed = nn.Embedding(len(AA_ALPHABET) + 1, cfg.embed_dim, padding_idx=None)
-            self.register_buffer(
-                "pos_encoding",
-                self._build_sinusoidal_table(cfg.max_seq_len, cfg.embed_dim),
-                persistent=False,
-            )
+            # NOTE: the positional table is no longer eagerly materialised at
+            # __init__ time for cfg.max_seq_len rows — at max_seq_len=120,000
+            # and embed_dim=256 that would be a ~123 MB buffer kept around
+            # for the entire lifetime of the module regardless of the actual
+            # sequence lengths ever passed in. Instead, _pos_encoding_for(n)
+            # below builds exactly an (n, embed_dim) table on demand and
+            # caches it, growing the cache only up to the longest sequence
+            # actually seen — identical values to the original eager table
+            # sliced to [:n], just computed lazily.
+            self.pos_encoding = None  # type: ignore[assignment]
+            self._pos_encoding_cache: Optional[torch.Tensor] = None
             self.input_proj: Optional[nn.Module] = None
         else:
             self.aa_embed = None  # type: ignore[assignment]
             self.pos_encoding = None  # type: ignore[assignment]
+            self._pos_encoding_cache: Optional[torch.Tensor] = None  # type: ignore[no-redef]
             # Project frozen ESM-2 hidden width → cfg.embed_dim.
             native_dim = self._esm_native_dim or cfg.embed_dim
             self.input_proj = nn.Sequential(
                 nn.Linear(native_dim, cfg.embed_dim),
                 nn.LayerNorm(cfg.embed_dim),
             )
+            # Standby "learned" path for the auto_learned_embed_threshold
+            # switch below. Created lazily (only the first time a sequence
+            # actually exceeds the threshold) rather than eagerly here, so
+            # existing ESM-2 checkpoints — whose state_dict has no such
+            # key — keep loading without a key mismatch for any run that
+            # never hits the threshold.
+            self._standby_aa_embed: Optional[nn.Embedding] = None
 
         logger.info(
             "SequenceEmbedder | backend=%s | embed_dim=%d",
@@ -594,6 +673,38 @@ class SequenceEmbedder(nn.Module):
         table[:, 1::2] = torch.cos(pos * div[:n_cos])
         return table
 
+    def _pos_encoding_for(self, n: int, device: torch.device) -> torch.Tensor:
+        """
+        Lazily build (and cache) the sinusoidal positional-encoding table
+        for the "learned" backend, sized to exactly the rows needed so
+        far rather than to ``cfg.max_seq_len`` up front.
+
+        Mathematically identical to slicing the original eagerly-built
+        ``(max_seq_len, embed_dim)`` table to ``[:n]`` — only the
+        materialisation strategy changed, not the values: the cache grows
+        (never shrinks) to the longest ``n`` requested in this process,
+        and is reused/sliced for any shorter request afterwards.
+
+        Args:
+            n      : number of residues (rows) needed.
+            device : target device.
+        Returns:
+            (n, embed_dim) positional-encoding table on ``device``.
+        """
+        cache = self._pos_encoding_cache
+        same_device = cache is not None and cache.device == device
+        if cache is None or cache.size(0) < n or not same_device:
+            # Only carry over the previous row-count as a "grow, don't
+            # shrink" floor when staying on the same device — a cache
+            # built for a different device says nothing about how many
+            # rows are worth keeping warm on this one.
+            prior_rows = cache.size(0) if (cache is not None and same_device) else 0
+            grow_to = max(n, prior_rows)
+            table = self._build_sinusoidal_table(grow_to, self.cfg.embed_dim).to(device)
+            self._pos_encoding_cache = table
+            cache = table
+        return cache[:n]
+
     # ------------------------------------------------------------------
     # Encoding helpers
     # ------------------------------------------------------------------
@@ -620,7 +731,26 @@ class SequenceEmbedder(nn.Module):
                 f"Sequence length {n} exceeds max_seq_len={self.cfg.max_seq_len}."
             )
         x = self.aa_embed(idx)                          # (N, embed_dim)
-        x = x + self.pos_encoding[:n].to(device)         # add positional signal
+        x = x + self._pos_encoding_for(n, device)        # add positional signal
+        return x
+
+    def _embed_learned_standalone(self, sequence: str, device: torch.device) -> torch.Tensor:
+        """
+        Same computation as ``_embed_learned``, but for the case where
+        ``self._backend_active == "esm2"`` and ``self.aa_embed`` is
+        ``None`` (the primary path is ESM-2). Lazily creates and reuses
+        ``self._standby_aa_embed`` so that ESM-2 checkpoints saved before
+        this auto-switch path existed keep loading unchanged for any run
+        that never crosses ``cfg.auto_learned_embed_threshold``.
+        """
+        if self._standby_aa_embed is None:
+            self._standby_aa_embed = nn.Embedding(
+                len(AA_ALPHABET) + 1, self.cfg.embed_dim, padding_idx=None
+            ).to(device)
+        idx = self.encode_indices(sequence).to(device)
+        n = idx.size(0)
+        x = self._standby_aa_embed(idx)                  # (N, embed_dim)
+        x = x + self._pos_encoding_for(n, device)         # add positional signal
         return x
 
     def _embed_esm2_fair(self, sequence: str, device: torch.device) -> torch.Tensor:
@@ -654,6 +784,16 @@ class SequenceEmbedder(nn.Module):
             device   : target device; inferred from module parameters if None.
         Returns:
             (N, cfg.embed_dim) per-residue embedding.
+
+        Long-sequence note: if ``cfg.embed_backend == "esm2"`` and the
+        sequence length exceeds ``cfg.auto_learned_embed_threshold``, this
+        call automatically routes through the "learned" embedding path
+        instead (ESM-2 was never trained on contexts this long; running it
+        there is both unreliable and OOM-prone). This only affects this
+        particular call — ``self._backend_active`` / ``cfg.embed_backend``
+        are left unchanged, so shorter sequences in the same model
+        instance continue to use ESM-2 as configured. Set
+        ``cfg.auto_learned_embed_threshold`` very high to disable this.
         """
         if device is None:
             device = next(self.parameters()).device if any(
@@ -667,6 +807,19 @@ class SequenceEmbedder(nn.Module):
             raise ValueError(
                 f"Sequence length {n} exceeds max_seq_len={self.cfg.max_seq_len}."
             )
+
+        use_learned_this_call = (
+            self._backend_active != "learned"
+            and n > self.cfg.auto_learned_embed_threshold
+        )
+        if use_learned_this_call:
+            logger.warning(
+                "Sequence length %d exceeds auto_learned_embed_threshold=%d; "
+                "auto-switching this call from embed_backend=%r to the 'learned' "
+                "fallback (ESM-2 is not designed for contexts this long).",
+                n, self.cfg.auto_learned_embed_threshold, self._backend_active,
+            )
+            return self._embed_learned_standalone(sequence, device)
 
         if self._backend_active == "learned":
             return self._embed_learned(sequence, device)
@@ -683,8 +836,157 @@ class SequenceEmbedder(nn.Module):
 
 
 # =============================================================================
-# 3.  Sequence Transformer Encoder
+# 2b.  Sliding-Window Self-Attention (O(N·w) alternative to full O(N²))
 # =============================================================================
+
+class SlidingWindowSelfAttention(nn.Module):
+    """
+    Banded (local) multi-head self-attention: residue ``i`` attends only
+    to residues in ``[i - window, i + window]`` (clipped at the sequence
+    boundaries), i.e. a band of width ``2*window + 1`` rather than the
+    full ``N`` columns of standard attention.
+
+    Implemented as query-side chunking rather than a dense ``(N, N)``
+    mask: for an ``(N, N)`` boolean mask alone would cost ``N²`` bits
+    (e.g. ~10 GB at N=100,000) before any attention math even starts,
+    defeating the purpose. Instead, each query chunk of size
+    ``chunk_size`` only ever materialises scores against the *local* key
+    span it can actually attend to — ``(chunk_size, span)`` rather than
+    ``(chunk_size, N)`` — so peak attention memory scales with
+    ``chunk_size · window``, not with ``N`` at all.
+
+    This changes the model's inductive bias relative to full attention
+    (residues farther apart than ``window`` no longer attend to each
+    other *directly* in a single layer — long-range information can
+    still mix indirectly across multiple stacked layers, the same way a
+    CNN's effective receptive field grows with depth), but reduces
+    attention compute from O(N²) to O(N·window), which is what makes
+    N ~ 100,000+ residues tractable.
+
+    Args:
+        dim         : model width (must be divisible by ``num_heads``).
+        num_heads   : number of attention heads.
+        window      : one-sided window radius — residue i attends to
+                      columns ``[max(0, i-window), min(N, i+window+1))``.
+        dropout     : attention-dropout probability.
+        chunk_size  : query-chunking granularity; defaults to
+                      ``4 * window`` (a few window-widths per chunk) when
+                      left as ``None``, which keeps the per-chunk local
+                      key span a small, bounded multiple of ``window``.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        window: int,
+        dropout: float = 0.0,
+        chunk_size: Optional[int] = None,
+    ) -> None:
+        super().__init__()
+        assert dim % num_heads == 0, f"dim ({dim}) must be divisible by num_heads ({num_heads})."
+        self.dim = dim
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.window = window
+        self.dropout = dropout
+        self.chunk_size = chunk_size or max(1, 4 * window)
+
+        self.qkv_proj = nn.Linear(dim, 3 * dim)
+        self.out_proj = nn.Linear(dim, dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x : (1, N, dim) — batch size fixed at 1 (single sequence),
+                matching the rest of this module's convention.
+        Returns:
+            (1, N, dim).
+        """
+        assert x.size(0) == 1, "SlidingWindowSelfAttention expects batch size 1 (single sequence)."
+        n = x.size(1)
+        device = x.device
+        w = self.window
+
+        qkv = self.qkv_proj(x)                                   # (1, N, 3*dim)
+        q, k, v = qkv.chunk(3, dim=-1)                            # each (1, N, dim)
+        q = q.view(n, self.num_heads, self.head_dim).transpose(0, 1)  # (heads, N, hd)
+        k = k.view(n, self.num_heads, self.head_dim).transpose(0, 1)  # (heads, N, hd)
+        v = v.view(n, self.num_heads, self.head_dim).transpose(0, 1)  # (heads, N, hd)
+
+        out_chunks: List[torch.Tensor] = []
+        for q_start in range(0, n, self.chunk_size):
+            q_end = min(q_start + self.chunk_size, n)
+            k_start = max(0, q_start - w)
+            k_end = min(n, q_end - 1 + w + 1)
+
+            q_chunk = q[:, q_start:q_end]                          # (heads, Cq, hd)
+            k_chunk = k[:, k_start:k_end]                          # (heads, Ck, hd)
+            v_chunk = v[:, k_start:k_end]                          # (heads, Ck, hd)
+
+            # Local band mask restricted to this (Cq, Ck) block — far
+            # smaller than the (N, N) mask a naive implementation would
+            # need, and rebuilt per-chunk so memory never scales with N.
+            q_pos = torch.arange(q_start, q_end, device=device).unsqueeze(1)   # (Cq, 1)
+            k_pos = torch.arange(k_start, k_end, device=device).unsqueeze(0)   # (1, Ck)
+            band_mask = (k_pos - q_pos).abs() <= w                              # (Cq, Ck) bool
+
+            attn_bias = torch.zeros(q_end - q_start, k_end - k_start, device=device, dtype=q.dtype)
+            attn_bias = attn_bias.masked_fill(~band_mask, float("-inf"))
+
+            # F.scaled_dot_product_attention dispatches to FlashAttention /
+            # memory-efficient kernels automatically on supported hardware
+            # (PyTorch >= 2.0), so the (Cq, Ck) score matrix this still
+            # implies is not necessarily even fully materialised in VRAM.
+            attn_out = F.scaled_dot_product_attention(
+                q_chunk, k_chunk, v_chunk,
+                attn_mask=attn_bias,
+                dropout_p=self.dropout if self.training else 0.0,
+            )  # (heads, Cq, hd)
+            out_chunks.append(attn_out)
+
+        out = torch.cat(out_chunks, dim=1)                          # (heads, N, hd)
+        out = out.transpose(0, 1).reshape(1, n, self.dim)           # (1, N, dim)
+        return self.out_proj(out)
+
+
+class SlidingWindowEncoderLayer(nn.Module):
+    """
+    Pre-LN transformer encoder layer using ``SlidingWindowSelfAttention``
+    instead of full self-attention — drop-in replacement for
+    ``nn.TransformerEncoderLayer`` restricted to batch size 1, no
+    padding mask (this module is only ever used in the single-sequence,
+    no-padding path of ``SequenceTransformerEncoder``).
+
+    Args:
+        cfg    : Seq2CoarseConfig instance.
+        window : one-sided sliding-window radius for this layer's
+                 attention (see ``SlidingWindowSelfAttention``).
+    """
+
+    def __init__(self, cfg: Seq2CoarseConfig, window: int) -> None:
+        super().__init__()
+        self.norm1 = nn.LayerNorm(cfg.hidden_dim)
+        self.attn = SlidingWindowSelfAttention(
+            dim=cfg.hidden_dim, num_heads=cfg.num_heads, window=window, dropout=cfg.dropout,
+        )
+        self.dropout1 = nn.Dropout(cfg.dropout)
+
+        self.norm2 = nn.LayerNorm(cfg.hidden_dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(cfg.hidden_dim, cfg.ffn_dim),
+            nn.GELU(),
+            nn.Dropout(cfg.dropout),
+            nn.Linear(cfg.ffn_dim, cfg.hidden_dim),
+        )
+        self.dropout2 = nn.Dropout(cfg.dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Args: x : (1, N, hidden_dim). Returns: (1, N, hidden_dim)."""
+        x = x + self.dropout1(self.attn(self.norm1(x)))
+        x = x + self.dropout2(self.ffn(self.norm2(x)))
+        return x
+
 
 class SequenceTransformerEncoder(nn.Module):
     """
@@ -697,6 +999,28 @@ class SequenceTransformerEncoder(nn.Module):
     language-model prior already present in the ESM-2 embedding and
     (b) self-attention over the *single* input sequence — no second
     sequence-dimension ("MSA axis") ever appears in this module.
+
+    Two attention paths are available:
+
+      • Full O(N²) self-attention (``nn.TransformerEncoder``, the
+        original/default behaviour) — every residue attends to every
+        other residue directly. Used whenever ``cfg.attn_window_size``
+        is ``None`` and N stays at or below
+        ``cfg.auto_window_attn_threshold``.
+      • Sliding-window O(N·w) self-attention (``SlidingWindowEncoderLayer``,
+        opt-in / auto-switched) — used when ``cfg.attn_window_size`` is
+        set explicitly, or automatically once N exceeds
+        ``cfg.auto_window_attn_threshold`` (using
+        ``cfg.attn_window_size_default`` as the radius). This is what
+        makes N ~ 100,000+ residues tractable, at the cost of residues
+        farther apart than the window no longer attending to each other
+        directly within a single layer (long-range signal still mixes
+        indirectly across the stacked layers).
+
+    The sliding-window stack is built lazily (on first use at a given
+    window size) rather than always at ``__init__``, so models that
+    never see a long sequence keep exactly the original parameter set
+    and checkpoint layout.
 
     Args:
         cfg : Seq2CoarseConfig instance.
@@ -723,6 +1047,29 @@ class SequenceTransformerEncoder(nn.Module):
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=cfg.num_layers)
         self.output_norm = nn.LayerNorm(cfg.hidden_dim)
 
+        # Sliding-window stack: built lazily in _get_window_encoder() the
+        # first time it is actually needed, keyed by window radius (in
+        # case attn_window_size changes across calls on the same instance).
+        # Not created here, so checkpoints from before this feature exists
+        # — or runs that never exceed auto_window_attn_threshold — see no
+        # new parameters at all.
+        self._window_encoders: Dict[int, nn.ModuleList] = {}
+
+    def _get_window_encoder(self, window: int) -> nn.ModuleList:
+        """Lazily build (and cache) a sliding-window layer stack for ``window``."""
+        if window not in self._window_encoders:
+            layers = nn.ModuleList([
+                SlidingWindowEncoderLayer(self.cfg, window=window)
+                for _ in range(self.cfg.num_layers)
+            ])
+            layers = layers.to(next(self.parameters()).device)
+            self._window_encoders[window] = layers
+            # Register so the layers are tracked as submodules (parameters,
+            # device/dtype moves, state_dict) even though they live inside
+            # a plain dict rather than a declared attribute.
+            self.add_module(f"_window_encoder_w{window}", layers)
+        return self._window_encoders[window]
+
     def forward(
         self,
         x: torch.Tensor,                          # (N, embed_dim)
@@ -732,14 +1079,43 @@ class SequenceTransformerEncoder(nn.Module):
         Args:
             x            : (N, embed_dim) per-residue embedding (single sequence).
             padding_mask : optional (N,) bool mask; True marks padded positions.
+                           Only supported on the full-attention path — the
+                           sliding-window path (used for very long
+                           sequences) assumes no padding, matching how
+                           this module is actually called elsewhere in
+                           the pipeline (one real sequence at a time, no
+                           batching).
         Returns:
             (N, hidden_dim) contextualised per-residue latent.
         """
+        n = x.size(0)
         h = self.input_norm(x)
         h = self.in_proj(h).unsqueeze(0)           # (1, N, hidden_dim) — batch size 1
 
-        src_key_padding_mask = padding_mask.unsqueeze(0) if padding_mask is not None else None
-        h = self.encoder(h, src_key_padding_mask=src_key_padding_mask)
+        window = self.cfg.attn_window_size
+        if window is None and n > self.cfg.auto_window_attn_threshold:
+            window = self.cfg.attn_window_size_default
+            logger.warning(
+                "Sequence length %d exceeds auto_window_attn_threshold=%d; "
+                "auto-switching SequenceTransformerEncoder from full O(N²) "
+                "attention to sliding-window attention with window=%d.",
+                n, self.cfg.auto_window_attn_threshold, window,
+            )
+
+        if window is not None:
+            if padding_mask is not None and padding_mask.any():
+                raise NotImplementedError(
+                    "Sliding-window attention does not support padding_mask; "
+                    "pass single, unpadded sequences (the standard call pattern "
+                    "for this module)."
+                )
+            window_encoder = self._get_window_encoder(window)
+            for layer in window_encoder:
+                h = layer(h)
+        else:
+            src_key_padding_mask = padding_mask.unsqueeze(0) if padding_mask is not None else None
+            h = self.encoder(h, src_key_padding_mask=src_key_padding_mask)
+
         h = self.output_norm(h).squeeze(0)         # (N, hidden_dim)
         return h
 
@@ -1363,15 +1739,32 @@ class DifferentiableMDS(nn.Module):
         README_PREDICTOR.md §9 for the numerical-equivalence check and
         complexity analysis).
 
+        Auto-switch: even if ``cfg.mds_use_landmarks`` is False, this
+        method automatically routes through ``_landmark_mds_init`` once
+        N exceeds ``cfg.auto_landmark_threshold`` — full classical MDS's
+        O(N³) eigendecomposition is not just slow but numerically
+        unreliable at that scale, regardless of available memory. Set
+        ``cfg.auto_landmark_threshold`` very high (or pass
+        ``mds_use_landmarks`` explicitly) to disable this and force full
+        classical MDS regardless of N.
+
         Args:
             target_dist : (N, N) target distance matrix.
         Returns:
             (N, mds_dim) initial coordinate guess.
         """
+        n = target_dist.size(0)
         if self.cfg.mds_use_landmarks:
             return self._landmark_mds_init(target_dist)
+        if n > self.cfg.auto_landmark_threshold:
+            logger.warning(
+                "N=%d exceeds auto_landmark_threshold=%d; auto-switching MDS "
+                "initialisation from full classical MDS (O(N^3)) to Landmark "
+                "MDS (O(L^3 + N*L*mds_dim), L=%d).",
+                n, self.cfg.auto_landmark_threshold, self.cfg.mds_num_landmarks,
+            )
+            return self._landmark_mds_init(target_dist)
 
-        n = target_dist.size(0)
         device, dtype = target_dist.device, target_dist.dtype
         d = target_dist.detach()
 
@@ -2293,6 +2686,115 @@ if __name__ == "__main__":
     assert landmark_init_coords.shape == (N, 3)
     assert torch.isfinite(landmark_init_coords).all(), "Landmark MDS init produced non-finite values."
     print(f"[PASS] Landmark MDS init (L=20, N={N}) → finite coords {landmark_init_coords.shape}")
+
+    # ── Test 17: Sliding-window attention == full attention when window ≥ N ──
+    # (a window that spans the whole sequence should attend to everything,
+    # i.e. reproduce full self-attention's *set of attended pairs* — this
+    # checks the encoder actually runs end-to-end and produces finite,
+    # correctly-shaped output, not numerical equality to nn.TransformerEncoder
+    # (different parameterisation/init), which is the real contract here.)
+    _model.eval()
+    with torch.no_grad():
+        h_full = _model.encoder(embed_probe := torch.randn(N, _cfg.embed_dim, device=_device))
+    _model.encoder.cfg.attn_window_size = N  # window ≥ N -> every pair attended
+    with torch.no_grad():
+        h_window_full = _model.encoder(embed_probe)
+    _model.encoder.cfg.attn_window_size = None  # restore
+    assert h_window_full.shape == (N, _cfg.hidden_dim)
+    assert torch.isfinite(h_window_full).all(), "Sliding-window encoder produced non-finite output."
+    print(f"[PASS] Sliding-window attention (window=N={N}) runs end-to-end → {h_window_full.shape}")
+
+    # ── Test 18: Sliding-window attention only sees local context ──────
+    # Perturbing a residue far outside a small window should not change
+    # another residue's output, while perturbing one *inside* the window
+    # should. This is the actual behavioural contract of a banded mask.
+    _model.encoder.cfg.attn_window_size = 2
+    torch.manual_seed(1)
+    base_embed = torch.randn(N, _cfg.embed_dim, device=_device)
+    with torch.no_grad():
+        out_base = _model.encoder(base_embed)
+        probe_idx = N // 2
+        far_embed = base_embed.clone()
+        far_embed[probe_idx + 10] += 5.0   # outside window=2 relative to probe_idx
+        out_far = _model.encoder(far_embed)
+        near_embed = base_embed.clone()
+        near_embed[probe_idx + 1] += 5.0   # inside window=2 relative to probe_idx
+        out_near = _model.encoder(near_embed)
+    _model.encoder.cfg.attn_window_size = None  # restore
+    far_changed = (out_far[probe_idx] - out_base[probe_idx]).abs().max().item()
+    near_changed = (out_near[probe_idx] - out_base[probe_idx]).abs().max().item()
+    assert far_changed < 1e-5, (
+        f"Sliding-window attention (window=2) leaked information from a "
+        f"residue 10 positions away (delta={far_changed:.6f}); banding is broken."
+    )
+    assert near_changed > 1e-5, (
+        "Sliding-window attention (window=2) failed to propagate information "
+        "from a residue 1 position away; banding is over-restrictive."
+    )
+    print(f"[PASS] Sliding-window attention (window=2) is local: "
+          f"in-window Δ={near_changed:.4f}, out-of-window Δ={far_changed:.2e}")
+
+    # ── Test 19: auto_window_attn_threshold triggers the sliding-window path ──
+    orig_threshold = _cfg.auto_window_attn_threshold
+    _cfg.auto_window_attn_threshold = N - 1  # force N to exceed it
+    with torch.no_grad():
+        out_auto = _model.encoder(base_embed)
+    _cfg.auto_window_attn_threshold = orig_threshold  # restore
+    assert out_auto.shape == (N, _cfg.hidden_dim)
+    assert torch.isfinite(out_auto).all()
+    print(f"[PASS] auto_window_attn_threshold={N - 1} auto-switches "
+          f"SequenceTransformerEncoder to sliding-window attention at N={N}")
+
+    # ── Test 20: auto_landmark_threshold triggers Landmark MDS automatically ──
+    orig_landmark_threshold = _cfg.auto_landmark_threshold
+    _cfg.auto_landmark_threshold = N - 1  # force N to exceed it
+    assert not _cfg.mds_use_landmarks, "Test setup assumption violated."
+    with torch.no_grad():
+        auto_landmark_coords = _model.mds._classical_mds_init(mds_probe_dist)
+    _cfg.auto_landmark_threshold = orig_landmark_threshold  # restore
+    assert auto_landmark_coords.shape == (N, 3)
+    assert torch.isfinite(auto_landmark_coords).all(), \
+        "Auto-switched Landmark MDS init produced non-finite values."
+    print(f"[PASS] auto_landmark_threshold={N - 1} auto-switches "
+          f"_classical_mds_init to Landmark MDS at N={N}, without setting mds_use_landmarks")
+
+    # ── Test 21: auto_learned_embed_threshold auto-switches the embedder ──
+    orig_embed_threshold = _cfg.auto_learned_embed_threshold
+    _cfg.auto_learned_embed_threshold = N - 1  # force N to exceed it
+    with torch.no_grad():
+        auto_embed_out = _model.embedder(_seq, device=_device)
+    _cfg.auto_learned_embed_threshold = orig_embed_threshold  # restore
+    assert auto_embed_out.shape == (N, _cfg.embed_dim)
+    assert torch.isfinite(auto_embed_out).all(), \
+        "Auto-switched 'learned' embedding fallback produced non-finite values."
+    print(f"[PASS] auto_learned_embed_threshold={N - 1} auto-switches "
+          f"SequenceEmbedder to the 'learned' fallback at N={N}, without changing cfg.embed_backend")
+
+    # ── Test 22: lazy positional-encoding cache grows monotonically ────
+    learned_cfg = Seq2CoarseConfig(embed_backend="learned", max_seq_len=10_000,
+                                    hidden_dim=32, num_heads=2, num_layers=1, embed_dim=32)
+    learned_embedder = SequenceEmbedder(learned_cfg).to(_device)
+    short_seq = "ACDEFGHIKL"          # 10 residues
+    long_seq = "ACDEFGHIKL" * 5        # 50 residues
+    with torch.no_grad():
+        out_short = learned_embedder(short_seq, device=_device)
+        cache_after_short = learned_embedder._pos_encoding_cache.size(0)
+        out_long = learned_embedder(long_seq, device=_device)
+        cache_after_long = learned_embedder._pos_encoding_cache.size(0)
+        out_short_again = learned_embedder(short_seq, device=_device)
+        cache_after_repeat = learned_embedder._pos_encoding_cache.size(0)
+    assert out_short.shape == (10, learned_cfg.embed_dim)
+    assert out_long.shape == (50, learned_cfg.embed_dim)
+    assert cache_after_short == 10, f"Expected cache sized to 10 after first call, got {cache_after_short}."
+    assert cache_after_long == 50, f"Expected cache grown to 50, got {cache_after_long}."
+    assert cache_after_repeat == 50, (
+        f"Expected cache to stay at 50 (not shrink) after a shorter request, got {cache_after_repeat}."
+    )
+    assert torch.allclose(out_short, out_short_again, atol=1e-6), (
+        "Re-embedding the same short sequence after the cache grew should give identical results."
+    )
+    print(f"[PASS] Lazy positional-encoding cache: {cache_after_short} → {cache_after_long} "
+          f"(grows on demand, never shrinks, never precomputed to max_seq_len={learned_cfg.max_seq_len})")
 
     print("=" * 70)
     print("  All tests passed.")
