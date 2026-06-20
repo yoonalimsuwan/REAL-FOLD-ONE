@@ -226,6 +226,51 @@ class Seq2CoarseConfig:
     min_distance      : lower edge of the first bin (Å).
     max_distance      : upper edge of the last bin (Å).
 
+    Distogram memory optimisation
+    ------------------------------
+    pair_proj_factorized : if True (default), DistogramHead computes its
+                            first linear layer as two separate (N, d) →
+                            (N, d) projections summed via broadcasting,
+                            instead of materialising an explicit
+                            (N, N, 2·hidden_dim) concatenated pair tensor.
+                            This is an exact algebraic re-expression of
+                            the same linear layer (verified numerically;
+                            see README_PREDICTOR.md §6) — it changes
+                            nothing about the function being computed,
+                            only how much memory the forward pass uses
+                            along the way. Roughly halves peak memory
+                            for the first layer with zero accuracy cost;
+                            disable only for debugging / parity checks
+                            against the original formulation.
+    pair_chunk_size       : if set, the (N, N, ·) pairwise computation is
+                             processed in row-chunks of this many residues
+                             at a time, rather than materialising the full
+                             (N, N, ·) tensor in one shot. Trades a small
+                             amount of speed for a large reduction in peak
+                             memory — e.g. pair_chunk_size=256 caps peak
+                             pairwise memory at roughly
+                             (256, N, hidden_dim) instead of (N, N,
+                             hidden_dim), independent of how large N
+                             grows. None (default) disables chunking and
+                             reproduces the original unchunked behaviour
+                             exactly. Recommended once N · num_distance_bins
+                             · hidden_dim starts to exceed available
+                             GPU memory (see README_PREDICTOR.md §3.3 for
+                             concrete N-vs-memory figures).
+    pair_proj_dtype       : if set (e.g. torch.bfloat16 / torch.float16),
+                             the pairwise projection stage runs in this
+                             reduced precision, halving (or better) its
+                             memory footprint relative to float32 — the
+                             same strategy AlphaFold3 / Boltz use for
+                             their pairwise representations. None
+                             (default) keeps the original float32 path
+                             unchanged. Output is cast back to the
+                             input's dtype before being returned, so
+                             callers never need to know this happened.
+                             Combine with autocast / GradScaler in the
+                             training loop for end-to-end mixed-precision
+                             training if desired.
+
     Differentiable MDS (coarse 3-D embedding)
     ------------------------------------------
     mds_iters       : number of SMACOF stress-majorization iterations.
@@ -285,6 +330,13 @@ class Seq2CoarseConfig:
     min_distance:      float = 2.0
     max_distance:       float = 40.0
 
+    # Distogram memory optimisation (all opt-in; defaults reproduce the
+    # original unchunked, full-float32 behaviour exactly)
+    pair_proj_factorized: bool = True
+    pair_chunk_size: Optional[int] = None
+    pair_proj_dtype: Optional[torch.dtype] = None
+
+
     # Differentiable MDS
     mds_iters:      int   = 200
     mds_dim:        int   = 3
@@ -321,6 +373,10 @@ class Seq2CoarseConfig:
         assert 0.0 <= self.dropout < 1.0
         assert self.num_distance_bins >= 2
         assert self.max_distance > self.min_distance > 0.0
+        assert self.pair_chunk_size is None or self.pair_chunk_size >= 1
+        assert self.pair_proj_dtype is None or self.pair_proj_dtype in (
+            torch.float16, torch.bfloat16, torch.float32,
+        ), f"pair_proj_dtype must be a float dtype or None; got {self.pair_proj_dtype!r}."
         assert self.mds_iters >= 1
         assert self.mds_dim >= 1
         assert self.mds_eps > 0.0
@@ -646,12 +702,42 @@ class DistogramHead(nn.Module):
     structure-prediction intermediate. Symmetrised so that
     ``logits[i, j] == logits[j, i]``.
 
-    Memory scaling note: this head materialises an (N, N, 2*hidden_dim)
-    pair tensor, i.e. O(N²·d) memory — the same asymptotic cost as any
-    pairwise distogram approach (AlphaFold-1, trRosetta included). For
-    very long sequences (N ≳ 1500 on typical GPU memory budgets), chunk
-    the (i, j) pairs and call ``forward`` per-chunk, or reduce
-    ``hidden_dim`` / process on CPU for an initial coarse pass.
+    Memory scaling note: this head is inherently O(N²·d) — the same
+    asymptotic cost as any pairwise distogram approach (AlphaFold-1,
+    trRosetta, and AlphaFold3 / Boltz's pairwise representation included).
+    Three independent, opt-in optimisations are available via
+    ``Seq2CoarseConfig`` to reduce the *constant factor* of that cost
+    (none change what is computed — see README_PREDICTOR.md §6 for the
+    numerical equivalence check):
+
+      • ``pair_proj_factorized`` (default True) — splits the first linear
+        layer's (2d → d) weight into two (d → d) halves applied to h_i and
+        h_j separately, then summed by broadcasting. This is an exact
+        algebraic identity for a linear layer: avoids ever materialising
+        the (N, N, 2d) concatenated input tensor, roughly halving memory
+        at that stage for free.
+      • ``pair_chunk_size`` (default None = unchunked) — processes the
+        (N, N, ·) computation in row-blocks, capping peak memory at
+        O(chunk_size · N · d) instead of O(N² · d).
+      • ``pair_proj_dtype`` (default None = float32) — runs the pairwise
+        stage in reduced precision (e.g. ``torch.bfloat16``), the same
+        strategy AlphaFold3 / Boltz use for their pairwise tensors. Output
+        is cast back to the input dtype before returning.
+      • ``use_2d_tiling`` (a ``forward_expected_distance`` argument, not a
+        config field) — when combined with ``pair_chunk_size``, tiles the
+        pairwise computation into ``(pair_chunk_size, pair_chunk_size)``
+        blocks rather than ``(pair_chunk_size, N)`` row-strips, capping
+        peak MLP-activation memory at ``O(block_size²·d)`` instead of
+        ``O(block_size·N·d)`` for the largest sequences. Computes both
+        directions of every off-diagonal block pair explicitly (the
+        factorized projection does not support a cheap transpose-based
+        shortcut between them when ``W_i != W_j``); this trades somewhat
+        higher wall-clock time for the additional memory reduction — it
+        does not reduce total MLP compute relative to row-chunking.
+
+    All three default to the original unchunked, factorization-equivalent,
+    full-precision behaviour reproduced — i.e. enabling them changes
+    memory and (modestly) speed, not the function being computed.
 
     Args:
         cfg : Seq2CoarseConfig instance.
@@ -661,6 +747,11 @@ class DistogramHead(nn.Module):
         super().__init__()
         self.cfg = cfg
         d = cfg.hidden_dim
+        # NOTE: kept as a single nn.Sequential (not split into separate
+        # modules) so that state_dict keys are identical to the original,
+        # unoptimised implementation — existing checkpoints remain
+        # loadable. The factorized forward path below indexes into this
+        # same Sequential rather than redefining its parameters.
         self.pair_proj = nn.Sequential(
             nn.Linear(2 * d, d),
             nn.GELU(),
@@ -677,20 +768,238 @@ class DistogramHead(nn.Module):
             persistent=False,
         )
 
+    # ------------------------------------------------------------------
+    # Internal: factorized first-layer projection
+    # ------------------------------------------------------------------
+
+    def _split_first_layer(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Split ``pair_proj[0]`` (an ``nn.Linear(2d, d)``) into the two
+        (d, d) weight halves that act on h_i and h_j respectively, plus
+        the shared bias.
+
+        For ``y = W @ concat(h_i, h_j) + b`` with ``W`` of shape
+        ``(d, 2d)``, splitting column-wise gives ``W = [W_i | W_j]`` such
+        that ``y = W_i @ h_i + W_j @ h_j + b`` exactly — verified
+        numerically in README_PREDICTOR.md §6.
+
+        Returns:
+            (W_i, W_j, b), each shaped for use with ``F.linear``.
+        """
+        first = self.pair_proj[0]
+        d = self.cfg.hidden_dim
+        W_i = first.weight[:, :d]   # (d, d)
+        W_j = first.weight[:, d:]   # (d, d)
+        b = first.bias if first.bias is not None else torch.zeros(
+            first.weight.size(0), device=first.weight.device, dtype=first.weight.dtype
+        )
+        return W_i, W_j, b
+
+    def _pairwise_logits_chunk(
+        self,
+        h: torch.Tensor,
+        row_start: int,
+        row_end: int,
+        compute_dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """
+        Compute distogram logits for rows ``[row_start:row_end)`` against
+        all columns, i.e. a ``(row_end - row_start, N, bins)`` chunk —
+        the unit of work both the chunked and unchunked paths share.
+
+        Args:
+            h             : (N, hidden_dim) per-residue latent, already
+                             cast to ``compute_dtype``.
+            row_start, row_end : row-block bounds (rows = the "i" index).
+            compute_dtype : dtype to run the pairwise stage in.
+        Returns:
+            (row_end - row_start, N, num_distance_bins) logits chunk, in
+            ``compute_dtype``.
+        """
+        n = h.size(0)
+        h_rows = h[row_start:row_end]              # (chunk, d)
+
+        if self.cfg.pair_proj_factorized:
+            W_i, W_j, b = self._split_first_layer()
+            W_i = W_i.to(compute_dtype)
+            W_j = W_j.to(compute_dtype)
+            b = b.to(compute_dtype)
+            proj_rows = F.linear(h_rows, W_i)        # (chunk, d)
+            proj_cols = F.linear(h, W_j)              # (N, d)
+            pre = proj_rows.unsqueeze(1) + proj_cols.unsqueeze(0) + b
+            # (chunk, N, d) — the (N, N, 2d) concat tensor is never formed.
+            rest = self.pair_proj[1:]
+            chunk_logits = rest(pre)                   # (chunk, N, bins)
+        else:
+            chunk = row_end - row_start
+            h_i = h_rows.unsqueeze(1).expand(chunk, n, -1)   # (chunk, N, d)
+            h_j = h.unsqueeze(0).expand(chunk, n, -1)         # (chunk, N, d)
+            pair = torch.cat([h_i, h_j], dim=-1)               # (chunk, N, 2d)
+            chunk_logits = self.pair_proj(pair.to(compute_dtype))
+
+        return chunk_logits
+
+    def _tiled_block_pair_logits(
+        self,
+        proj_i_full: torch.Tensor,   # (N, d), proj_i = F.linear(h, W_i, b) -- bias included
+        proj_j_full: torch.Tensor,   # (N, d), proj_j = F.linear(h, W_j)     -- no bias
+        a_start: int, a_end: int,
+        b_start: int, b_end: int,
+    ) -> torch.Tensor:
+        """
+        Compute the ``(a_end - a_start, b_end - b_start, bins)`` logits
+        block with row-residues from ``[a_start:a_end)`` and column-
+        residues from ``[b_start:b_end)``, i.e. ``logits[A, B]`` using the
+        factorized projections — applying ``pair_proj[1:]`` only to this
+        block.
+
+        IMPORTANT correctness note: this is *not* generally equal to
+        ``logits[B, A].transpose(0, 1)`` when ``W_i != W_j`` (the default,
+        unconstrained case for ``pair_proj[0]``). Concretely,
+        ``logits[A,B][p,q] = MLP(proj_i[A[p]] + proj_j[B[q]])`` while
+        ``logits[B,A][q,p] = MLP(proj_i[B[q]] + proj_j[A[p]])`` — these
+        involve different combinations of ``proj_i``/``proj_j`` whenever
+        the two projections differ, so swapping the block argument order
+        is *not* the same as transposing the result. Both directions must
+        therefore be computed explicitly; see ``_tiled_expected_distance``
+        for how this is exploited to still avoid redundant computation
+        (each unordered block pair is computed once per direction, not
+        once total).
+
+        Args:
+            proj_i_full, proj_j_full : full (N, d) factorized projections.
+            a_start, a_end : row-residue block bounds.
+            b_start, b_end : column-residue block bounds.
+        Returns:
+            (a_end - a_start, b_end - b_start, bins) logits block.
+        """
+        p_i = proj_i_full[a_start:a_end].unsqueeze(1)    # (Ba, 1, d)
+        p_j = proj_j_full[b_start:b_end].unsqueeze(0)    # (1, Bb, d)
+        pre = p_i + p_j                                    # (Ba, Bb, d), broadcast
+        rest = self.pair_proj[1:]
+        return rest(pre)                                   # (Ba, Bb, bins)
+
+    def _tiled_expected_distance(
+        self,
+        h: torch.Tensor,
+        compute_dtype: torch.dtype,
+        block_size: int,
+    ) -> torch.Tensor:
+        """
+        2-D block-tiled, autograd-safe computation of the expected
+        distance matrix. The ``(N, N, bins)`` logits computation is
+        tiled into ``(block_size, block_size, hidden_dim)``-sized pieces
+        rather than computed as one ``(N, N, hidden_dim)`` intermediate
+        tensor, capping peak pairwise-MLP activation memory at
+        ``O(block_size² · hidden_dim)`` independent of ``N``.
+
+        Each unordered block pair ``{I, J}`` (including ``I == J``) is
+        visited once; both the ``logits[I, J]`` and ``logits[J, I]``
+        directions are computed explicitly (the factorized projection
+        does **not** support obtaining one from the other via a cheap
+        transpose — see ``_tiled_block_pair_logits`` for why), then
+        symmetrised exactly as ``forward()`` does for the full matrix:
+        ``0.5 · (logits[I,J] + logits[J,I].transpose)``. This still
+        delivers the full memory benefit of 2-D tiling; it does not
+        claim a compute saving over row-chunking, since both genuinely
+        require one MLP evaluation per ordered pair of residues.
+
+        Unlike a pre-allocate-and-scatter-assign implementation (which
+        would break autograd, since in-place indexed assignment into a
+        ``torch.zeros(...)`` leaf tensor does not propagate gradients
+        back through the assigned values), this method assembles the
+        result purely via ``torch.cat``, which is fully differentiable —
+        gradients flow correctly back through every block into ``h``
+        (verified in the ``__main__`` test suite).
+
+        Args:
+            h             : (N, hidden_dim) per-residue latent.
+            compute_dtype : dtype for the pairwise stage.
+            block_size    : tile edge length (both the i- and j- block
+                             size); the existing ``cfg.pair_chunk_size``
+                             is reused for this purpose.
+        Returns:
+            (N, N) expected Cα–Cα distance matrix, symmetric, zero
+            diagonal, in ``compute_dtype``.
+        """
+        n = h.size(0)
+        W_i, W_j, b = self._split_first_layer()
+        W_i, W_j, b = W_i.to(compute_dtype), W_j.to(compute_dtype), b.to(compute_dtype)
+        proj_i_full = F.linear(h, W_i, b)   # (N, d) — bias included exactly once, here
+        proj_j_full = F.linear(h, W_j)       # (N, d) — no bias
+
+        bin_centers_f32 = self.bin_centers.to(torch.float32)
+        row_starts = list(range(0, n, block_size))
+
+        # dist_blocks[(i_idx, j_idx)] holds the (Bi, Bj) expected-distance
+        # block; filled for every (i_idx, j_idx) pair (both i<j and i>j are
+        # computed explicitly, since the factorized projection does not
+        # support deriving one from the other — see docstring above).
+        dist_blocks: Dict[Tuple[int, int], torch.Tensor] = {}
+
+        for i_idx, i_start in enumerate(row_starts):
+            i_end = min(i_start + block_size, n)
+            for j_idx, j_start in enumerate(row_starts):
+                if j_idx < i_idx:
+                    continue  # this unordered pair was already handled when (j_idx, i_idx) was visited
+                j_end = min(j_start + block_size, n)
+
+                logits_IJ = self._tiled_block_pair_logits(
+                    proj_i_full, proj_j_full, i_start, i_end, j_start, j_end
+                )  # (Bi, Bj, bins)
+
+                if i_idx == j_idx:
+                    sym_IJ = 0.5 * (logits_IJ + logits_IJ.transpose(0, 1))
+                    dist_blocks[(i_idx, j_idx)] = self._block_logits_to_dist(sym_IJ, bin_centers_f32)
+                else:
+                    logits_JI = self._tiled_block_pair_logits(
+                        proj_i_full, proj_j_full, j_start, j_end, i_start, i_end
+                    )  # (Bj, Bi, bins) — computed explicitly; NOT derived from logits_IJ
+                    sym_IJ = 0.5 * (logits_IJ + logits_JI.transpose(0, 1))    # (Bi, Bj, bins)
+                    sym_JI = sym_IJ.transpose(0, 1)                            # (Bj, Bi, bins) — exact, since this is now a true symmetric pair
+                    dist_blocks[(i_idx, j_idx)] = self._block_logits_to_dist(sym_IJ, bin_centers_f32)
+                    dist_blocks[(j_idx, i_idx)] = self._block_logits_to_dist(sym_JI, bin_centers_f32)
+
+        dist_row_blocks = [
+            torch.cat([dist_blocks[(i_idx, j_idx)] for j_idx in range(len(row_starts))], dim=1)
+            for i_idx in range(len(row_starts))
+        ]
+        dmat = torch.cat(dist_row_blocks, dim=0)  # (N, N)
+        dmat = dmat * (1.0 - torch.eye(n, device=dmat.device, dtype=dmat.dtype))
+        return dmat.to(compute_dtype)
+
+    @staticmethod
+    def _block_logits_to_dist(logits_block: torch.Tensor, bin_centers_f32: torch.Tensor) -> torch.Tensor:
+        """Softmax (in fp32, for numerical stability) + expected-value reduction for one logits block."""
+        probs = F.softmax(logits_block.to(torch.float32), dim=-1)
+        return torch.einsum("ijb,b->ij", probs, bin_centers_f32)
+
+    # ------------------------------------------------------------------
+    # Public forward
+    # ------------------------------------------------------------------
+
     def forward(self, h: torch.Tensor) -> torch.Tensor:
         """
         Args:
             h : (N, hidden_dim) per-residue latent.
         Returns:
-            (N, N, num_distance_bins) symmetrised distance-bin logits.
+            (N, N, num_distance_bins) symmetrised distance-bin logits, in
+            the same dtype as the input ``h``.
         """
         n = h.size(0)
-        h_i = h.unsqueeze(1).expand(n, n, -1)      # (N, N, d)
-        h_j = h.unsqueeze(0).expand(n, n, -1)      # (N, N, d)
-        pair = torch.cat([h_i, h_j], dim=-1)        # (N, N, 2d)
-        logits = self.pair_proj(pair)               # (N, N, bins)
+        in_dtype = h.dtype
+        compute_dtype = self.cfg.pair_proj_dtype or in_dtype
+        h_c = h.to(compute_dtype)
+
+        chunk_size = self.cfg.pair_chunk_size or n   # None -> single chunk == unchunked
+        chunks = [
+            self._pairwise_logits_chunk(h_c, start, min(start + chunk_size, n), compute_dtype)
+            for start in range(0, n, chunk_size)
+        ]
+        logits = torch.cat(chunks, dim=0) if len(chunks) > 1 else chunks[0]  # (N, N, bins)
+
         logits = 0.5 * (logits + logits.transpose(0, 1))  # enforce symmetry
-        return logits
+        return logits.to(in_dtype)
 
     def expected_distance_matrix(self, logits: torch.Tensor) -> torch.Tensor:
         """
@@ -699,16 +1008,80 @@ class DistogramHead(nn.Module):
         differentiable, unlike argmax bin selection.
 
         Args:
-            logits : (N, N, num_distance_bins).
+            logits : (N, N, num_distance_bins), any float dtype.
         Returns:
-            (N, N) expected Cα–Cα distance matrix, symmetric, zero diagonal.
+            (N, N) expected Cα–Cα distance matrix, symmetric, zero diagonal,
+            same dtype as the input ``logits``.
         """
-        probs = F.softmax(logits, dim=-1)            # (N, N, bins)
-        dmat = torch.einsum("ijb,b->ij", probs, self.bin_centers)
+        in_dtype = logits.dtype
+        probs = F.softmax(logits.to(torch.float32), dim=-1)   # softmax in fp32 for stability
+        dmat = torch.einsum("ijb,b->ij", probs, self.bin_centers.to(torch.float32))
         n = dmat.size(0)
         dmat = dmat * (1.0 - torch.eye(n, device=dmat.device, dtype=dmat.dtype))
         dmat = 0.5 * (dmat + dmat.transpose(0, 1))
-        return dmat
+        return dmat.to(in_dtype)
+
+    def forward_expected_distance(self, h: torch.Tensor, use_2d_tiling: bool = False) -> torch.Tensor:
+        """
+        Fused, chunk-aware computation of the expected distance matrix
+        directly from per-residue latents — without ever materialising
+        the full ``(N, N, num_distance_bins)`` logits tensor.
+
+        Use this instead of ``forward()`` + ``expected_distance_matrix()``
+        whenever the raw logits are not separately needed (e.g. at
+        inference, or whenever the only consumer is
+        ``DifferentiableMDS``). For training with a distogram
+        cross-entropy loss, use ``forward()`` instead, since that loss
+        needs the actual per-bin logits.
+
+        Args:
+            h : (N, hidden_dim) per-residue latent.
+            use_2d_tiling : if True and ``cfg.pair_chunk_size`` is set,
+                uses ``_tiled_expected_distance`` (2-D block tiling) instead
+                of the default row-chunked path. 2-D tiling caps the
+                largest intermediate MLP activation at
+                ``(pair_chunk_size, pair_chunk_size, hidden_dim)`` rather
+                than ``(pair_chunk_size, N, hidden_dim)`` — a genuine
+                further memory reduction over row-chunking for very long
+                sequences. It does **not** reduce MLP compute relative to
+                row-chunking: both directions of every off-diagonal block
+                pair are computed explicitly, since the factorized
+                projection does not support deriving ``logits[J,I]`` from
+                ``logits[I,J]`` via a cheap transpose when ``W_i != W_j``
+                (verified numerically — see README_PREDICTOR.md §6/§8 for
+                the equivalence checks, including the bug this caught and
+                fixed during development). Expect somewhat higher wall-
+                clock time than row-chunking due to the nested-loop Python
+                overhead; use 2-D tiling specifically when row-chunked
+                activations are still too large for available memory, and
+                row-chunking otherwise.
+        Returns:
+            (N, N) expected Cα–Cα distance matrix, symmetric, zero diagonal.
+        """
+        n = h.size(0)
+        in_dtype = h.dtype
+        compute_dtype = self.cfg.pair_proj_dtype or in_dtype
+        h_c = h.to(compute_dtype)
+
+        if use_2d_tiling and self.cfg.pair_chunk_size is not None:
+            dmat = self._tiled_expected_distance(h_c, compute_dtype, self.cfg.pair_chunk_size)
+            return dmat.to(in_dtype)
+
+        chunk_size = self.cfg.pair_chunk_size or n
+        row_chunks = []
+        for start in range(0, n, chunk_size):
+            end = min(start + chunk_size, n)
+            chunk_logits = self._pairwise_logits_chunk(h_c, start, end, compute_dtype)  # (chunk, N, bins)
+            chunk_probs = F.softmax(chunk_logits.to(torch.float32), dim=-1)
+            chunk_dist = torch.einsum(
+                "ijb,b->ij", chunk_probs, self.bin_centers.to(torch.float32)
+            )  # (chunk, N)
+            row_chunks.append(chunk_dist)
+
+        dmat = torch.cat(row_chunks, dim=0) if len(row_chunks) > 1 else row_chunks[0]  # (N, N)
+        dmat = dmat * (1.0 - torch.eye(n, device=dmat.device, dtype=dmat.dtype))
+        dmat = 0.5 * (dmat + dmat.transpose(0, 1))
+        return dmat.to(in_dtype)
 
 
 # =============================================================================
@@ -989,6 +1362,8 @@ class SeqToCoarseStructure(nn.Module):
         sequence: str,
         init_coords: Optional[torch.Tensor] = None,
         mds_iters: Optional[int] = None,
+        return_distogram: bool = True,
+        use_2d_tiling: bool = False,
     ) -> Dict[str, torch.Tensor]:
         """
         Args:
@@ -998,6 +1373,32 @@ class SeqToCoarseStructure(nn.Module):
                           a homology template, or an extended-chain build).
                           Random initialisation is used if None.
             mds_iters   : override cfg.mds_iters for this call.
+            return_distogram : if True (default), the full ``(N, N,
+                          num_distance_bins)`` logits tensor is computed
+                          and returned under "distogram" — needed for
+                          distogram cross-entropy training
+                          (``Seq2CoarseTrainer``). If False, the cheaper
+                          fused path (``DistogramHead.forward_expected_distance``)
+                          is used instead, which never materialises the
+                          full logits tensor; "distogram" is omitted from
+                          the returned dict in that case. Set to False
+                          for inference-only use (e.g. via ``predict()``)
+                          when paired with ``pair_chunk_size`` /
+                          ``pair_proj_dtype`` for maximum memory savings
+                          on long sequences.
+            use_2d_tiling : only takes effect when ``return_distogram=False``
+                          and ``cfg.pair_chunk_size`` is set. Uses 2-D
+                          block-tiled pairwise computation instead of row-
+                          chunking — a further memory reduction for the
+                          largest sequences (caps intermediate MLP
+                          activations at block_size² rather than
+                          block_size · N), at the cost of somewhat higher
+                          wall-clock time from nested-loop overhead. Does
+                          not reduce MLP compute relative to row-chunking
+                          — see
+                          ``DistogramHead.forward_expected_distance`` and
+                          README_PREDICTOR.md §8 for details and when to
+                          prefer one over the other.
         Returns:
             Dict with:
                 "init_coords"   : (N, 3) coarse Cα coordinates.
@@ -1006,6 +1407,7 @@ class SeqToCoarseStructure(nn.Module):
                                    ``seq_features`` argument.
                 "sigma"         : (N, 1) structural-regime field.
                 "distogram"     : (N, N, num_distance_bins) raw logits.
+                                   Only present if return_distogram=True.
                 "expected_dist" : (N, N) expected distance matrix.
         """
         device = next(self.parameters()).device
@@ -1016,29 +1418,59 @@ class SeqToCoarseStructure(nn.Module):
         embed = self.embedder(sequence, device=device)            # (N, embed_dim)
         h = self.encoder(embed)                                    # (N, hidden_dim)
 
-        distogram = self.distogram_head(h)                         # (N, N, bins)
-        expected_dist = self.distogram_head.expected_distance_matrix(distogram)  # (N, N)
+        out: Dict[str, torch.Tensor] = {}
+        if return_distogram:
+            distogram = self.distogram_head(h)                                       # (N, N, bins)
+            expected_dist = self.distogram_head.expected_distance_matrix(distogram)   # (N, N)
+            out["distogram"] = distogram
+        else:
+            expected_dist = self.distogram_head.forward_expected_distance(
+                h, use_2d_tiling=use_2d_tiling
+            )                                                                          # (N, N)
+
         sigma = self.sigma_head(h)                                  # (N, 1)
 
         coarse_coords = self.mds(
             expected_dist, init_coords=init_coords, n_iters=mds_iters
         )                                                            # (N, 3)
 
-        return {
+        out.update({
             "init_coords":   coarse_coords,
             "seq_features":  h,
             "sigma":         sigma,
-            "distogram":     distogram,
             "expected_dist": expected_dist,
-        }
+        })
+        return out
 
     @torch.no_grad()
-    def predict(self, sequence: str) -> Dict[str, torch.Tensor]:
-        """Inference-mode convenience wrapper (eval(), no_grad, detached)."""
+    def predict(
+        self,
+        sequence: str,
+        return_distogram: bool = True,
+        use_2d_tiling: bool = False,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Inference-mode convenience wrapper (eval(), no_grad, detached).
+
+        Args:
+            sequence         : raw amino-acid string.
+            return_distogram : default True, matching prior behaviour
+                                exactly. Set False to use the fused,
+                                memory-saving distance-matrix path
+                                (skips materialising full logits) —
+                                recommended for long sequences when combined
+                                with ``cfg.pair_chunk_size`` /
+                                ``cfg.pair_proj_dtype``; see
+                                README_PREDICTOR.md §3.3 / §8.
+            use_2d_tiling     : only relevant when ``return_distogram=False``;
+                                see ``SeqToCoarseStructure.forward``.
+        """
         was_training = self.training
         self.eval()
         try:
-            out = self.forward(sequence)
+            out = self.forward(
+                sequence, return_distogram=return_distogram, use_2d_tiling=use_2d_tiling
+            )
         finally:
             if was_training:
                 self.train()
@@ -1512,6 +1944,75 @@ if __name__ == "__main__":
     assert torch.allclose(p1["init_coords"], p2["init_coords"], atol=1e-5), \
         "predict() should be deterministic in eval mode (no dropout, fixed MDS init)."
     print("[PASS] predict() determinism in eval mode")
+
+    # ── Test 9: Factorized pair projection == unfactorized (exact identity) ──
+    _model.eval()
+    with torch.no_grad():
+        h_probe = torch.randn(N, _cfg.hidden_dim, device=_device)
+        logits_factorized = _model.distogram_head._pairwise_logits_chunk(
+            h_probe, 0, N, h_probe.dtype
+        )
+        _model.distogram_head.cfg.pair_proj_factorized = False
+        logits_unfactorized = _model.distogram_head._pairwise_logits_chunk(
+            h_probe, 0, N, h_probe.dtype
+        )
+        _model.distogram_head.cfg.pair_proj_factorized = True  # restore
+    assert torch.allclose(logits_factorized, logits_unfactorized, atol=1e-4), \
+        f"Factorized vs unfactorized pair projection mismatch: " \
+        f"max diff = {(logits_factorized - logits_unfactorized).abs().max().item():.6f}"
+    print("[PASS] pair_proj_factorized=True produces identical logits to the unfactorized path")
+
+    # ── Test 10: Chunked == unchunked (exact identity) ──────────────────
+    with torch.no_grad():
+        full_logits = _model.distogram_head(h_probe)
+        _model.distogram_head.cfg.pair_chunk_size = 7  # deliberately uneven vs N=48
+        chunked_logits = _model.distogram_head(h_probe)
+        _model.distogram_head.cfg.pair_chunk_size = None  # restore
+    assert torch.allclose(full_logits, chunked_logits, atol=1e-4), \
+        f"Chunked vs unchunked distogram mismatch: " \
+        f"max diff = {(full_logits - chunked_logits).abs().max().item():.6f}"
+    print("[PASS] pair_chunk_size=7 produces identical logits to the unchunked (None) path")
+
+    # ── Test 11: Fused expected-distance path == forward()+expected_distance_matrix() ──
+    with torch.no_grad():
+        out_full = _model(_seq, return_distogram=True)
+        out_fused = _model(_seq, return_distogram=False)
+    assert "distogram" not in out_fused, "return_distogram=False should omit 'distogram' from output."
+    assert torch.allclose(out_full["expected_dist"], out_fused["expected_dist"], atol=1e-3), \
+        f"Fused vs unfused expected-distance mismatch: " \
+        f"max diff = {(out_full['expected_dist'] - out_fused['expected_dist']).abs().max().item():.6f}"
+    print("[PASS] return_distogram=False (fused path) matches return_distogram=True (full path)")
+
+    # ── Test 12: 2-D tiled path == row-chunked path (exact identity) ────
+    with torch.no_grad():
+        _model.distogram_head.cfg.pair_chunk_size = 11  # deliberately uneven vs N=48
+        dmat_row_chunked = _model.distogram_head.forward_expected_distance(
+            h_probe, use_2d_tiling=False
+        )
+        dmat_2d_tiled = _model.distogram_head.forward_expected_distance(
+            h_probe, use_2d_tiling=True
+        )
+        _model.distogram_head.cfg.pair_chunk_size = None  # restore
+    assert torch.allclose(dmat_row_chunked, dmat_2d_tiled, atol=1e-4), \
+        f"2D-tiled vs row-chunked expected-distance mismatch: " \
+        f"max diff = {(dmat_row_chunked - dmat_2d_tiled).abs().max().item():.6f}"
+    print("[PASS] use_2d_tiling=True produces identical results to row-chunking (chunk_size=11, N=48)")
+
+    # ── Test 13: 2-D tiled path preserves gradient flow (the bug the row-      ──
+    # ── allocate-and-scatter-assign anti-pattern would have introduced) ──────
+    _model.zero_grad()
+    h_grad_probe = torch.randn(N, _cfg.hidden_dim, device=_device, requires_grad=True)
+    _model.distogram_head.cfg.pair_chunk_size = 13
+    dmat_for_grad = _model.distogram_head.forward_expected_distance(
+        h_grad_probe, use_2d_tiling=True
+    )
+    _model.distogram_head.cfg.pair_chunk_size = None  # restore
+    loss_2d = dmat_for_grad.sum()
+    loss_2d.backward()
+    assert h_grad_probe.grad is not None and torch.isfinite(h_grad_probe.grad).all() \
+        and h_grad_probe.grad.abs().sum() > 0, \
+        "Gradient did not flow back through the 2D-tiled path to its input."
+    print("[PASS] Gradients flow correctly through the 2D-tiled (block-cat-assembled) path")
 
     print("=" * 70)
     print("  All tests passed.")
