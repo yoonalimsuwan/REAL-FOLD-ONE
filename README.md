@@ -153,7 +153,7 @@ python real_fold_one_v2.py refine -i folded_model.pdb -o refined.pdb --steps 500
 python real_fold_one_v2.py validate --input refined.pdb --reference native.pdb
 
 # Step 3: Run MD (explicit solvent, NPT, 100 ns)
-python real_fold_one.py md -i refined.pdb -o traj --steps 50000000 --temperature 310 --gpu
+python real_fold_one_v2.py md -i refined.pdb -o traj --steps 50000000 --temperature 310 --gpu
 ```
 
 All steps share the same molecular topology and force field; there is no format conversion
