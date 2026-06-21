@@ -141,6 +141,33 @@
 #         certification (CME residual) wired as that domain's live
 #         `quality_fn`.
 #
+# v3.3.0  EVOLUTION BV — Mode-4 Cell-Population Wiring  [NEW]
+#         Primary developer of this patch: Claude (Anthropic). Gemini, GPT,
+#         and DeepSeek not involved in this revision.
+#   [NEW] `GNOEvolutionBVEncoderAdapter` now drives a small fixed synthetic
+#         Mode-3 (ch3d) grid in addition to its existing synthetic Mode-1
+#         graph, mirroring `structural_gno_evolution_bv_standalone.py`'s own
+#         smoke-test pattern exactly (same N/E/Nx convention). This grid
+#         feeds `self.bv_model.cellpop_bridge.rollout(...)` so the adapter
+#         can surface Mode-4 (cell-population) health alongside Mode-1's
+#         BV-3 certification — wholly additive, no change to the BV file
+#         itself, no change to `.encode()`'s existing latent contract.
+#   [NEW] `GNOEvolutionBVEncoderAdapter.get_quality_score()` now averages
+#         two independent [0, 1] signals when both are available:
+#           (a) BV-3 CME residual  → exp(-|residual|)            (unchanged)
+#           (b) Mode-4 population stability → derived from the rollout's
+#               final `n_alive` (collapse/blow-up guard against
+#               `cellpop_n_max`) and how close `rate_trace[-1]` sits to
+#               `cfg.pop_target_division_rate` (a calibration guard).
+#         Either signal alone still degrades gracefully to the neutral 0.5
+#         default exactly as before if its underlying bridge is
+#         unavailable (e.g. `bv_full_theory_one` or `cell_population_one`
+#         not importable) — this patch only adds a second readout, it does
+#         not change the existing fallback behaviour of the first.
+#   [NEW] `attach_evolution_bv_to_ecosystem()` unchanged in signature;
+#         registration now transparently carries the combined quality
+#         signal since it simply forwards `wrapper.get_quality_score`.
+#
 # =============================================================================
 # THEORETICAL FOUNDATIONS
 # ────────────────────────
@@ -191,8 +218,9 @@
 #                                               + opt-in multi-LLM consensus
 #   structural_gno_evolution_bv_standalone.py [NEW v3.2] → EVOLUTION ONE
 #                                               GNO surrogate + genuine BV
-#                                               (Batalin-Vilkovisky) layer;
-#                                               registered as domain
+#                                               (Batalin-Vilkovisky) layer
+#                                               + Mode-4 cell population
+#                                               [v3.3]; registered as domain
 #                                               "evolution_bv"
 #
 # =============================================================================
@@ -244,7 +272,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("AGI_ONE_v2")
 
-AGI_ONE_VERSION: str = "3.2.0"
+AGI_ONE_VERSION: str = "3.3.0"
 
 # =============================================================================
 # ONE Ecosystem — Graceful Imports
@@ -3524,7 +3552,7 @@ class SurrogateAdapter:
 
 class GNOEvolutionBVEncoderAdapter(nn.Module):
     """
-    [v3.2 NEW] Primary developer: Claude (Anthropic).
+    [v3.2 NEW, extended v3.3] Primary developer: Claude (Anthropic).
 
     Wraps `StructuralGNOEvolutionBV` (graph-batch interface, three modes:
     evolution / langevin / ch3d) so it satisfies the flat-latent `.encode()`
@@ -3555,14 +3583,29 @@ class GNOEvolutionBVEncoderAdapter(nn.Module):
          parameter this adapter introduces; the wrapped BV model itself
          adds zero new parameters relative to plain GNO Evolution).
 
+    [v3.3 NEW] A second, separate fixed synthetic batch — a small ch3d
+    voxel grid, built with the exact same N/E/Nx convention as
+    structural_gno_evolution_bv_standalone.py's own `__main__` smoke test —
+    is registered alongside the Mode-1 graph above. It is used ONLY by
+    `get_quality_score()` (see below) to drive `self.bv_model.cellpop_bridge`
+    Mode-3 → Mode-4; it never touches `.encode()`'s latent path, so the
+    pre-v3.3 `.encode()` contract (and therefore everything downstream of it
+    in `EcosystemOrchestrator.forward()`) is completely unchanged.
+
     Quality hook:
-      `get_quality_score()` calls the model's own analytic BV-3
-      certification (`bv_bridge.certify`) on the same synthetic edge_index
-      and turns its CME residual into a [0, 1] score via
-      `exp(-residual)`. If `bv_full_theory_one` (the optional exact-engine
-      dependency) isn't importable in this environment, `bv_bridge` is
-      simply unavailable and this returns the neutral 0.5 default — the
-      same graceful degradation the BV file already documents for itself.
+      `get_quality_score()` blends up to two independent [0, 1] signals:
+        (a) BV-3 analytic certification (`bv_bridge.certify`) on the
+            synthetic Mode-1 edge_index → CME residual → `exp(-residual)`.
+            Unchanged from v3.2.
+        (b) [v3.3 NEW] Mode-4 cell-population health: runs the synthetic
+            ch3d grid through Mode 3, rolls `cellpop_bridge` forward on the
+            resulting `pred_u`, and turns the rollout's final population
+            size and division-rate calibration into a second [0, 1] score
+            (see `_population_quality_score`).
+      If only one signal's underlying bridge is available, that signal
+      alone is returned (still in [0, 1]). If neither is available, this
+      returns the neutral 0.5 default — the same graceful degradation the
+      BV file already documents for itself at every level.
     """
 
     def __init__(
@@ -3571,12 +3614,14 @@ class GNOEvolutionBVEncoderAdapter(nn.Module):
         agi_latent_dim: int,
         n_synth_nodes : int = 16,
         n_synth_edges : int = 48,
+        ch3d_grid_size: int = 4,
         device      : Optional[torch.device] = None,
     ) -> None:
         super().__init__()
         self.bv_model       = bv_model
         self.n_synth_nodes  = n_synth_nodes
         node_in_dim         = bv_model.cfg.node_in_dim
+        grid_in_dim         = bv_model.cfg.grid_in_dim
         d                   = bv_model.cfg.hidden_dim
 
         self.lift    = nn.Linear(agi_latent_dim, n_synth_nodes * node_in_dim)
@@ -3589,7 +3634,26 @@ class GNOEvolutionBVEncoderAdapter(nn.Module):
         self.register_buffer("_edge_index", torch.stack([src, dst], dim=0).to(dev))
         self.register_buffer("_sigma", torch.full((n_synth_nodes, 1), 0.5, device=dev))
 
+        # [v3.3 NEW] Fixed synthetic ch3d grid for the Mode-4 quality probe
+        # only — same construction as the BV file's own smoke test (N, E,
+        # Nx = 12, 24, 4 there; here Nx is the one configurable knob since
+        # it alone sets the grid's voxel count M = Nx**3 and hence the cost
+        # of this probe). Registered as buffers (not learned) for the same
+        # reason `_edge_index` / `_sigma` are: this is fixed scaffolding to
+        # give the model *some* input to certify against, not a learned
+        # representation of anything.
+        Nx = ch3d_grid_size
+        self._ch3d_grid_size = Nx
+        M = Nx ** 3
+        g_src = torch.randint(0, M, (M * 2,))
+        g_dst = torch.randint(0, M, (M * 2,))
+        self.register_buffer("_ch3d_u_init",     torch.randn(Nx, Nx, Nx, device=dev))
+        self.register_buffer("_ch3d_grid_feats", torch.randn(M, grid_in_dim, device=dev))
+        self.register_buffer("_ch3d_grid_edges", torch.stack([g_src, g_dst], dim=0).to(dev))
+        self.register_buffer("_ch3d_sigma_3d",   torch.rand(Nx, Nx, Nx, device=dev))
+
         self._last_quality: float = 0.5
+        self._last_pop_quality: float = 0.5
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         B = x.shape[0]
@@ -3614,21 +3678,91 @@ class GNOEvolutionBVEncoderAdapter(nn.Module):
         pooled_batch = torch.stack(outs, dim=0)
         return self.readout(pooled_batch)
 
+    def _population_quality_score(self) -> Optional[float]:
+        """
+        [v3.3 NEW] Mode-4 cell-population health → [0, 1], or None if
+        `cellpop_bridge` is unavailable (caller falls back appropriately).
+
+        Drives the fixed synthetic ch3d grid through Mode 3 to get a
+        `pred_u`, rolls `cellpop_bridge` forward under `torch.no_grad()`
+        (this is a read-only health probe, not a training step — it must
+        never create a graph that the rest of AGI ONE's backward pass could
+        accidentally walk into), and combines two diagnostics into one
+        score:
+          • survival factor   : n_alive_final / cellpop_n_max, clamped to
+                                 [0, 1] — guards against population
+                                 collapse (→0) or saturation at capacity
+                                 (→1 is fine; this is not penalised, only
+                                 collapse is, since saturating n_max is a
+                                 capacity artifact of the synthetic probe's
+                                 small size, not a real instability).
+          • calibration factor: exp(-|rate_trace[-1] - pop_target_division_rate|
+                                 / pop_target_division_rate) — how close the
+                                 induced division rate sits to the
+                                 configured target; 1.0 at exact match,
+                                 decaying smoothly otherwise.
+        The two are averaged. Both factors are intentionally cheap,
+        bounded, and have no failure mode that can return outside [0, 1].
+        """
+        bridge = getattr(self.bv_model, "cellpop_bridge", None)
+        if bridge is None or not getattr(bridge, "available", False):
+            return None
+        try:
+            cfg = self.bv_model.cfg
+            with torch.no_grad():
+                ch_batch = _GNOBatchData(
+                    u_init          = self._ch3d_u_init,
+                    grid_feats      = self._ch3d_grid_feats,
+                    grid_edge_index = self._ch3d_grid_edges,
+                    sigma_3d        = self._ch3d_sigma_3d,
+                )
+                out_ch  = self.bv_model.forward(ch_batch, mode="ch3d")
+                rollout = bridge.rollout(out_ch["pred_u"], hard=True)
+            if rollout is None:
+                return None
+
+            survival = min(max(rollout.n_alive_trace[-1] / max(cfg.cellpop_n_max, 1), 0.0), 1.0)
+
+            target = float(cfg.pop_target_division_rate)
+            achieved = float(rollout.rate_trace[-1].item())
+            calibration = float(
+                torch.exp(
+                    torch.tensor(-abs(achieved - target) / max(target, 1e-6))
+                ).item()
+            )
+            self._last_pop_quality = min(max(0.5 * (survival + calibration), 0.0), 1.0)
+        except Exception as exc:
+            logger.debug(f"GNOEvolutionBVEncoderAdapter._population_quality_score() fallback: {exc}")
+            return self._last_pop_quality
+        return self._last_pop_quality
+
     def get_quality_score(self) -> float:
-        """Live BV-3 certification → [0, 1] quality score (cached fallback)."""
+        """
+        BV-3 certification + [v3.3 NEW] Mode-4 population health → blended
+        [0, 1] quality score (cached fallback on either sub-probe's failure).
+        """
+        bv_score: Optional[float] = None
         try:
             bridge = getattr(self.bv_model, "bv_bridge", None)
-            if bridge is None or not getattr(bridge, "available", False):
-                return self._last_quality
-            cert = bridge.certify(self._edge_index, step=0, kind="evo")
-            if cert is None:
-                return self._last_quality
-            self._last_quality = float(
-                torch.exp(torch.tensor(-abs(cert.cme_residual))).item()
-            )
+            if bridge is not None and getattr(bridge, "available", False):
+                cert = bridge.certify(self._edge_index, step=0, kind="evo")
+                if cert is not None:
+                    bv_score = float(
+                        torch.exp(torch.tensor(-abs(cert.cme_residual))).item()
+                    )
+                    self._last_quality = bv_score
         except Exception as exc:
             logger.debug(f"GNOEvolutionBVEncoderAdapter.get_quality_score() fallback: {exc}")
-        return self._last_quality
+
+        pop_score = self._population_quality_score()
+
+        if bv_score is None and pop_score is None:
+            return self._last_quality   # neutral 0.5 unless a prior call cached something
+        if bv_score is None:
+            return pop_score
+        if pop_score is None:
+            return bv_score
+        return 0.5 * (bv_score + pop_score)
 
 
 def attach_evolution_bv_to_ecosystem(
@@ -3639,17 +3773,23 @@ def attach_evolution_bv_to_ecosystem(
     name          : str = "structural_gno_evolution_bv",
 ) -> Optional[GNOEvolutionBVEncoderAdapter]:
     """
-    [v3.2 NEW] Convenience one-liner for Yoon's own scripts:
+    [v3.2 NEW, quality hook extended v3.3] Convenience one-liner for
+    Yoon's own scripts:
 
         attach_evolution_bv_to_ecosystem(trainer.orchestrator, 512, device)
 
     Builds a `StructuralGNOEvolutionBV`, wraps it in
     `GNOEvolutionBVEncoderAdapter`, and registers it on `orchestrator`
-    under domain "evolution_bv" with its BV-3 certification wired in as
-    a live `quality_fn`. Returns the adapter's underlying wrapper module
-    (so the caller can still load a real checkpoint into `.bv_model`
-    afterwards) or None if `structural_gno_evolution_bv_standalone` isn't
-    importable in this environment — never raises.
+    under domain "evolution_bv" with its combined BV-3 certification +
+    Mode-4 cell-population health wired in as a live `quality_fn` (see
+    `GNOEvolutionBVEncoderAdapter.get_quality_score`). If `bv_cfg` leaves
+    `enable_cell_population=True` (the BV file's own default) and
+    `cell_population_one` is importable, Mode-4 is included automatically;
+    otherwise the score quietly falls back to BV-3 alone, exactly as
+    before v3.3. Returns the adapter's underlying wrapper module (so the
+    caller can still load a real checkpoint into `.bv_model` afterwards)
+    or None if `structural_gno_evolution_bv_standalone` isn't importable
+    in this environment — never raises.
     """
     if not HAS_GNO_EVOLUTION_BV:
         logger.warning(
