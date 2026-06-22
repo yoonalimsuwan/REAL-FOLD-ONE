@@ -90,7 +90,7 @@ if not logger.handlers:
 # Import REAL FOLD ONE engine (must be in Python path)
 # -----------------------------------------------------------------------------
 try:
-    from real_fold_one import (
+    from real_fold_one_v2 import (
         RefinementEngine,
         RefinementConfig,
         detect_sequence_type,
@@ -104,7 +104,7 @@ try:
         AA_3_TO_1,
     )
 except ImportError:
-    logger.error("real_fold_one not found. Place real_fold_one.py in the working directory.")
+    logger.error("real_fold_one_v2 not found. Place real_fold_one_v2.py in the working directory.")
     sys.exit(1)
 
 # ONE Core Fold — for direct use of bridge and shared components
