@@ -86,13 +86,13 @@
 #   - Positional restraints, automatic ligand CCD, disulfide detection, PTMs
 #
 # Usage examples:
-#   python real_fold_one.py refine -i input.pdb -o refined.pdb --steps 200
-#   python real_fold_one.py refine -i input.pdb -o refined.pdb --ml-potential mace-mp-0
-#   python real_fold_one.py train -i pdbs/*.pdb --epochs 50
-#   python real_fold_one.py origami --shape design.json --output origami
-#   python real_fold_one.py md -i input.pdb -o traj --steps 100000
-#   python real_fold_one.py test -i input.pdb
-#   python real_fold_one.py validate -i input.pdb [--reference ref.pdb]
+#   python real_fold_one_v2.py refine -i input.pdb -o refined.pdb --steps 200
+#   python real_fold_one_v2.py refine -i input.pdb -o refined.pdb --ml-potential mace-mp-0
+#   python real_fold_one_v2.py train -i pdbs/*.pdb --epochs 50
+#   python real_fold_one_v2.py origami --shape design.json --output origami
+#   python real_fold_one_v2.py md -i input.pdb -o traj --steps 100000
+#   python real_fold_one_v2.py test -i input.pdb
+#   python real_fold_one_v2.py validate -i input.pdb [--reference ref.pdb]
 # =============================================================================
 import math, os, sys, json, argparse, warnings, random, itertools, time, logging, gc, atexit, weakref
 from dataclasses import dataclass, field
