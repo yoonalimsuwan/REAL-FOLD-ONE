@@ -217,8 +217,41 @@ _SOFTPLUS_B = 100.0
 
 def _softplus_floor(x: torch.Tensor, floor: float,
                     beta: float = _SOFTPLUS_B) -> torch.Tensor:
-    """Differentiable lower bound: floor + softplus(x - floor)."""
-    return floor + F.softplus(x - floor, beta=beta)
+    """
+    Differentiable lower bound: smoothly clamps x to be >= floor.
+
+    BUGFIX (2026-06): the previous implementation returned
+        floor + softplus(x - floor, beta)
+    which, at x == floor, evaluates to
+        floor + softplus(0, beta) = floor + log(2)/beta.
+    With the default beta=100 this adds a FIXED ABSOLUTE offset of
+    log(2)/100 ~= 0.00693 regardless of the requested `floor` value. For
+    any sigma_min smaller than ~0.01 (e.g. the CahnHilliardConfig default
+    of 1e-3), the *effective* floor actually enforced by every call site
+    in this file was ~0.00693, not the configured sigma_min -- silently
+    making sigma roughly 7x stiffer than intended at default config, and
+    making `cfg.sigma_min` not correspond to the true numerical floor for
+    any value below ~0.007.
+
+    Fix: scale `beta` so the softplus transition width stays a small
+    *fraction* of `floor`'s own magnitude rather than a fixed absolute
+    width. This keeps the offset log(2)/beta_eff negligible relative to
+    `floor` at every scale (tiny floors get proportionally tiny offsets;
+    large floors keep the original beta), while preserving the
+    function's lower-bound guarantee (output >= floor for all real x)
+    and its differentiability/monotonicity (a beta rescale is still a
+    valid softplus, just sharper).
+
+    `beta` remains overridable by callers; the adaptive rescale only
+    raises beta above the caller-supplied value when the latter would
+    otherwise produce an offset larger than ~2% of |floor|, so it never
+    makes the transition softer than requested -- only sharper when
+    needed to respect a small floor.
+    """
+    floor_scale = max(abs(floor), 1e-6)
+    min_beta_for_floor = math.log(2.0) / (0.02 * floor_scale)
+    beta_eff = max(beta, min_beta_for_floor)
+    return floor + F.softplus(x - floor, beta=beta_eff)
 
 
 def _soft_abs(x: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
