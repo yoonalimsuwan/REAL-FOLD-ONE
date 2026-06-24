@@ -853,7 +853,7 @@ class OpenMMEnergyCalculator:
         p = platform_name.upper()
         if p == 'CUDA' and torch.cuda.is_available():
             return torch.device('cuda')
-        if p in ('OPENCL', 'METAL', 'MPS') and torch.backends.mps.is_available():
+        if p in ('METAL', 'MPS') and torch.backends.mps.is_available():
             return torch.device('mps')
         return torch.device('cpu')
 
@@ -1109,7 +1109,7 @@ class FastNeighborList:
             indexing='ij'), dim=-1).reshape(-1, 3)
         self.offset_linear = (offsets * self.stride).sum(dim=-1)
 
-        lin_to_pos = torch.full((int(unique_lin.max().item()) + 1), -1, dtype=torch.long, device=self.device)
+        lin_to_pos = torch.full((int(unique_lin.max().item()) + 1,), -1, dtype=torch.long, device=self.device)
         lin_to_pos[unique_lin] = torch.arange(len(unique_lin), device=self.device)
         self.lin_to_pos = lin_to_pos
 
@@ -1899,7 +1899,7 @@ class RefinementConfig:
     solvate: bool = False
     ionic_strength: float = 0.15
     box_padding: float = 1.0
-    implicit_solvent: Optional[str] = 'OBC'
+    implicit_solvent: Optional[str] = None
     refine_solute_only: bool = True
     ligand_smiles: Dict[str, str] = field(default_factory=dict)
     restraint_atoms_full: Optional[List[int]] = None
@@ -2159,9 +2159,8 @@ class RefinementEngine(nn.Module):
             ca = self._get_ca_coords(solute_coords)
             ca.retain_grad()
 
-            E_openmm = openmm_solute_energy(solute_coords, self.calculator)
-
             with autocast(enabled=use_amp_local):
+                E_openmm = openmm_solute_energy(solute_coords, self.calculator)
                 E_soc = soc_energy_fn(ca, alpha, edge_dict['soc'][0], edge_dict['soc'][1],
                                       w_soc=self.cfg.w_soc)
                 ent = -(alpha * torch.log(alpha.clamp(min=1e-8))).sum()
@@ -2339,20 +2338,32 @@ class Trainer:
         full_coords_fixed = init_all_ang.to(self.engine.device)
         solute_mask = meta['solute_mask'].to(self.engine.device)
         solute_coords = full_coords_fixed[solute_mask].clone().detach()
+        full2sol = meta['full2sol']
+        # Same CA/C4' extraction as RefinementEngine._setup_system, so that
+        # training operates on the same residue-level representation that
+        # refine() uses at inference time (previously this fell back to
+        # treating every solute atom as if it were a CA, which trained the
+        # kernel at the wrong length scale).
+        ca_indices = torch.tensor(
+            [full2sol[idx] for idx in meta['ca_indices_full'] if idx in full2sol],
+            dtype=torch.long, device=self.engine.device
+        )
         calculator = OpenMMEnergyCalculator(system, topology, full_coords_fixed, solute_mask,
                                             self.cfg.openmm_platform)
-        data = (solute_coords, calculator)
+        data = (solute_coords, calculator, ca_indices)
         self._cached_data[fpath] = data
         return data
 
     def _train_epoch(self, structure_data, optimizer):
         total_loss = 0.0
-        for solute_coords, calculator in structure_data:
+        for solute_coords, calculator, ca_indices in structure_data:
             solute_coords = solute_coords.clone().detach().requires_grad_(True)
-            ca = solute_coords
+            if len(ca_indices) == 0:
+                continue
+            ca = solute_coords[ca_indices]
             M = ca.shape[0]
             alpha = torch.ones(M, device=solute_coords.device)
-            edge_dict = self.engine.neighbor_mgr.build(ca)
+            edge_dict = self.engine.neighbor_mgr.build(ca.detach())
             E_soc = self.engine.soc.compute_soc_energy(ca, alpha, edge_dict['soc'][0], edge_dict['soc'][1],
                                                        w_soc=self.cfg.w_soc)
             E_openmm = openmm_solute_energy(solute_coords, calculator)
@@ -2382,8 +2393,8 @@ class Trainer:
         structure_data = []
         for fpath in pdb_list:
             try:
-                solute_coords, calculator = self._load_or_cache(fpath)
-                structure_data.append((solute_coords, calculator))
+                solute_coords, calculator, ca_indices = self._load_or_cache(fpath)
+                structure_data.append((solute_coords, calculator, ca_indices))
             except Exception as e:
                 logger.warning(f"Skipping {fpath}: {e}")
 
@@ -2395,8 +2406,9 @@ class Trainer:
             from torch.utils.data import DataLoader, TensorDataset
             # Build dataset with indices so we can retrieve the right calculator per sample
             all_coords = torch.stack([d[0] for d in structure_data])
-            # We'll store calculators in a list and index them
+            # We'll store calculators and CA indices in lists and index them
             calculators = [d[1] for d in structure_data]
+            ca_indices_list = [d[2] for d in structure_data]
             dataset = TensorDataset(all_coords, torch.arange(len(calculators)))
             sampler = torch.utils.data.distributed.DistributedSampler(dataset)
             dataloader = DataLoader(dataset, batch_size=1, sampler=sampler)
@@ -2407,12 +2419,15 @@ class Trainer:
                 for batch in dataloader:
                     solute_coords, idx = batch
                     solute_coords = solute_coords.squeeze(0).detach().requires_grad_(True).to(self.engine.device)
-                    # Get the correct calculator for this sample
+                    # Get the correct calculator and CA indices for this sample
                     calc = calculators[idx.item()]
-                    ca = solute_coords
+                    ca_indices = ca_indices_list[idx.item()]
+                    if len(ca_indices) == 0:
+                        continue
+                    ca = solute_coords[ca_indices]
                     M = ca.shape[0]
                     alpha = torch.ones(M, device=self.engine.device)
-                    edge_dict = self.engine.neighbor_mgr.build(ca)
+                    edge_dict = self.engine.neighbor_mgr.build(ca.detach())
                     E_soc = self.engine.soc.compute_soc_energy(ca, alpha, edge_dict['soc'][0], edge_dict['soc'][1],
                                                                w_soc=self.cfg.w_soc)
                     E_openmm = openmm_solute_energy(solute_coords, calc)
@@ -2434,7 +2449,7 @@ class Trainer:
                                 f"α={self.kernel.alpha.item():.4f}  λ={self.kernel.lambd.item():.4f}  "
                                 f"scale={self.kernel.scale.item():.4f}")
 
-        for _, calculator in self._cached_data.values():
+        for _, calculator, _ in self._cached_data.values():
             calculator.close()
         self._cached_data.clear()
         return self.kernel.alpha.item(), self.kernel.lambd.item(), self.kernel.scale.item()
@@ -2562,10 +2577,15 @@ def validate_structure(pdb_file: str, reference_pdb: Optional[str] = None, platf
                 ref_coords = ref_ca.coord
                 refined_coords = result['solute_coords']
                 ca_indices = engine.ca_indices.cpu().numpy()
-                ref_ca_idx = np.array([i for i, at in enumerate(ref_struct) if at.atom_name == "CA"])
-                if len(ref_ca_idx) == len(ca_indices):
+                # NOTE: ref_coords is already filtered down to CA atoms only
+                # (length == number of CA atoms in ref_struct). It must be
+                # used directly and NOT re-indexed with indices computed
+                # against the unfiltered ref_struct (that was the bug here:
+                # ref_ca_idx ranged over len(ref_struct), but was used to
+                # index into the already-shorter ref_coords array).
+                if len(ref_coords) == len(ca_indices):
                     refined_ca = refined_coords[ca_indices]
-                    rmsd = compute_rmsd(refined_ca, ref_coords[ref_ca_idx])
+                    rmsd = compute_rmsd(refined_ca, ref_coords)
                     metrics['rmsd_ca'] = float(rmsd)
                 else:
                     logger.warning("CA count mismatch between refined and reference; RMSD skipped.")
@@ -2624,8 +2644,8 @@ def main():
     refine_parser.add_argument('--ligand-smiles', type=str, help='JSON string mapping residue name to SMILES')
     refine_parser.add_argument('--restraint-json', type=str, help='JSON with "atoms" (PDB 0‑based) and "target" (Å)')
     refine_parser.add_argument('--seed', type=int, default=None, help='Random seed for reproducibility')
-    refine_parser.add_argument('--implicit-solvent', type=str, default='OBC',
-                               help='Implicit solvent model (OBC, GBn2, ...), set to "none" for explicit')
+    refine_parser.add_argument('--implicit-solvent', type=str, default='none',
+                               help='Implicit solvent model (OBC, GBn2, ...), set to "none" for explicit/no solvent (default: none)')
     refine_parser.add_argument('--ml-potential', type=str, default='ani2x',
                                help='OpenMM-ML potential for native autograd: ani2x, ani1ccx, mace-mp-0, '
                                     'aimnet2, or "none" to use classical AMBER + force-injection fallback.')
