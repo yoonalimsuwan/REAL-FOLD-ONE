@@ -168,6 +168,40 @@
 #         registration now transparently carries the combined quality
 #         signal since it simply forwards `wrapper.get_quality_score`.
 #
+# v3.4.1  HODGE — Rewired for structural_gno_hodge.py v2 / hodge_one v2  [NEW]
+#         Primary developer of this patch: Claude (Anthropic). Gemini, GPT,
+#         and DeepSeek not involved in this revision.
+#   [BREAKING, internal only] `structural_gno_hodge.py` was rebuilt (v2)
+#         around hodge_one v2's two concrete polarized Hodge varieties
+#         (`VarietyClass.ABELIAN` complex-torus particle adapter vs.
+#         `VarietyClass.K3_ABSTRACT` R^22 generator) instead of a 1-D toy
+#         line. The pre-v3.4.1 `GNOHodgeEncoderAdapter` constructed a bare
+#         `StructuralGNOHodge(cfg)` and called it directly as
+#         `model(x_pos, target, sigma)` — that constructor/call shape no
+#         longer exists at the top level (StructuralGNOHodge is now an
+#         *internal* shared 1-D slice network). No external call site of
+#         `attach_gno_hodge_to_ecosystem()` changes (same signature), so
+#         this is breaking only for code that imported
+#         `StructuralGNOHodge` from this file directly, which nothing
+#         outside `GNOHodgeEncoderAdapter` ever did.
+#   [NEW] `GNOHodgeEncoderAdapter` now wraps `UnifiedHodgeOperatorTrainer`
+#         (built via `structural_gno_hodge.build_system`), the v2 entry
+#         point that owns variety dispatch, the active GNO model,
+#         `hodge_one.CycleClassMap`, and `hodge_one.LearnableSOCKernel`.
+#         `.encode()` mirrors the trainer's own `_abelian_step`/`_k3_step`
+#         (minus the optimizer step) and reads out `computed_periods`
+#         — the one tensor shape stable across both varieties — rather
+#         than the particle tensor, which only exists for ABELIAN.
+#   [NEW] `GNOHodgeEncoderAdapter.get_quality_score()` now scores against
+#         the *real* hodge_one v2 training losses (period-fit +
+#         Hodge-Riemann + integrality, plus spacing/entropy/smooth for
+#         ABELIAN) via `compute_total_loss_abelian` / `compute_total_loss_k3`,
+#         mapped through `exp(-total_loss)` — replacing the old anti-
+#         collapse spacing-ratio heuristic with the model's own objective.
+#   [NEW] `hodge_cfg.variety` ("abelian" | "k3_abstract") is now the single
+#         switch selecting which polarized Hodge structure AGI ONE's hodge
+#         domain reasons over; default "abelian" matches `SGNOHodgeConfig`.
+#
 # =============================================================================
 # THEORETICAL FOUNDATIONS
 # ────────────────────────
@@ -272,7 +306,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("AGI_ONE_v2")
 
-AGI_ONE_VERSION: str = "3.3.0"
+AGI_ONE_VERSION: str = "3.4.1"
 
 # =============================================================================
 # ONE Ecosystem — Graceful Imports
@@ -408,14 +442,32 @@ except ImportError:
     HAS_GNO_FOLD = False
     logger.warning("✗ structural_gno_fold_v3 not found — fold domain disabled")
 
-# ── HODGE surrogate: Structural GNO Hodge  [v3.4 NEW] ────────────────────────
+# ── HODGE surrogate: Structural GNO Hodge  [v3.4 NEW, rewired v3.4.1] ────────
+# [v3.4.1 NEW] structural_gno_hodge.py was rebuilt (v2) around hodge_one v2's
+# two concrete varieties (ABELIAN complex-torus particle adapter vs.
+# K3_ABSTRACT R^22 generator) instead of the old 1-D-line StructuralGNOHodge
+# called directly with (x_pos, target_hodge, sigma). The old
+# `StructuralGNOHodge(cfg)` constructor signature and direct
+# `model(x_pos, target, sigma)` call this file used pre-v3.4.1 no longer
+# match — StructuralGNOHodge is now an *internal* 1-D slice network reused
+# by StructuralGNOHodgeAbelianAdapter; the top-level entry point is
+# `UnifiedHodgeOperatorTrainer` (built via `build_system(cfg, device)`).
+# See GNOHodgeEncoderAdapter below for the rewired adapter.
 try:
-    from structural_gno_hodge import StructuralGNOHodge, SGNOHodgeConfig
+    from structural_gno_hodge import (
+        SGNOHodgeConfig,
+        UnifiedHodgeOperatorTrainer,
+        build_system as build_gno_hodge_system,
+        project_to_h11_batch,
+        compute_total_loss_abelian,
+        compute_total_loss_k3,
+    )
+    import hodge_one as hodge_one_v2
     HAS_GNO_HODGE = True
-    logger.info("✓ structural_gno_hodge  [v3.4 NEW]")
+    logger.info("✓ structural_gno_hodge  [v3.4 NEW, rewired v3.4.1 for hodge_one v2]")
 except ImportError:
     HAS_GNO_HODGE = False
-    logger.warning("✗ structural_gno_hodge not found — hodge domain disabled")
+    logger.warning("✗ structural_gno_hodge (or hodge_one v2) not found — hodge domain disabled")
 
 # ── MATH surrogate: Structural GNO Number Theory  [v3.4 NEW] ─────────────────
 try:
@@ -4136,61 +4188,161 @@ def attach_gno_fold_to_ecosystem(
 
 class GNOHodgeEncoderAdapter(nn.Module):
     """
-    [v3.4 NEW] Wraps `StructuralGNOHodge` (HODGE ONE surrogate).
+    [v3.4 NEW, rewired v3.4.1] Wraps `UnifiedHodgeOperatorTrainer` — the
+    top-level entry point of `structural_gno_hodge.py` v2 — instead of
+    calling the old standalone `StructuralGNOHodge(x_pos, target, sigma)`
+    directly.
 
-    `forward(x_pos, target_hodge, sigma)` is already batched `(B, N)` /
-    `(B, period_dim)` / `(B, 1)`, so unlike Fold this needs no per-item
-    loop — the lifted particle positions and a fixed synthetic target
-    Hodge vector go straight through one real batched forward pass.
+    Why this had to change
+    -----------------------
+    hodge_one.py was rebuilt (v2) around two concrete polarized Hodge
+    varieties (`hodge_one.VarietyClass.ABELIAN` / `.K3_ABSTRACT`), and
+    structural_gno_hodge.py followed: `StructuralGNOHodge` is now an
+    *internal* 1-D slice network, reused either by
+    `StructuralGNOHodgeAbelianAdapter` (applied independently across the
+    `g*2` real coordinate slices of a complex torus) or replaced entirely
+    by `StructuralGNOHodgeK3` (a noise→R^22 generator with no particle
+    cloud at all). There is no longer a single `(x_pos, target, sigma) ->
+    x_optimal` call that works for "the" Hodge model — which path runs is
+    decided once, at build time, by `cfg.variety`.
+
+    Adapter design
+    ---------------
+    `UnifiedHodgeOperatorTrainer` (built by `build_gno_hodge_system`) is
+    the one object that knows which path is active (`self.trainer.built.kind`)
+    and owns everything needed to run it: the GNO model itself
+    (`trainer.model`), `hodge_one.CycleClassMap` for computing periods,
+    `hodge_one.LearnableSOCKernel` for the sigma context, and the matching
+    loss functions. This adapter therefore does not reimplement variety
+    dispatch — it mirrors exactly the two private step methods the trainer
+    itself uses (`_abelian_step` / `_k3_step`), minus the optimizer step,
+    so AGI ONE's `.encode()` calls run the *real* forward path of whichever
+    variety `hodge_cfg.variety` selected, not a re-derived approximation.
+
+    `.encode()` reads out `computed_periods: (B, period_dim)` rather than
+    the particle tensor, because `period_dim` is the one tensor shape that
+    is guaranteed stable across both varieties (g*g for ABELIAN, 22 for
+    K3_ABSTRACT) — the particle tensor shape `(B, N, g, 2)` only exists for
+    ABELIAN, so reading it out directly would make `.encode()` variety-
+    dependent, which the rest of the ecosystem's flat-latent `.encode()`
+    protocol must not be.
     """
 
     def __init__(
         self,
-        hodge_model   : "StructuralGNOHodge",
+        hodge_trainer : "UnifiedHodgeOperatorTrainer",
         agi_latent_dim: int,
         n_particles   : int = 32,
         device        : Optional[torch.device] = None,
     ) -> None:
         super().__init__()
-        self.hodge_model = hodge_model
+        self.trainer = hodge_trainer
         self.N = n_particles
-        period_dim = hodge_model.cfg.period_dim
+        period_dim = hodge_trainer.built.period_dim
 
-        self.lift    = nn.Linear(agi_latent_dim, n_particles)
-        self.readout = nn.Linear(n_particles, agi_latent_dim)
+        dev = device or hodge_trainer.device
 
-        dev = device or next(hodge_model.parameters(), torch.empty(0)).device
+        self.lift_noise = nn.Linear(agi_latent_dim, hodge_trainer.cfg.noise_dim)
+        self.readout    = nn.Linear(period_dim, agi_latent_dim)
+
+        # Fixed synthetic target Hodge vector, deterministic across calls
+        # (mirrors the v3.4 pre-rewire convention of one frozen random
+        # target rather than re-sampling on every encode()).
         torch.manual_seed(0)
-        self.register_buffer("_target_hodge", torch.randn(1, period_dim, device=dev))
+        self.register_buffer(
+            "_target_hodge", torch.randn(1, period_dim, device=dev)
+        )
 
         self._last_quality: float = 0.5
 
-    def encode(self, x: torch.Tensor) -> torch.Tensor:
+    # ------------------------------------------------------------------
+    def _run_forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        One real (no-grad-agnostic) forward pass through whichever variety
+        is active, returning `computed_periods: (B, period_dim)`. Mirrors
+        `UnifiedHodgeOperatorTrainer._abelian_step` / `._k3_step` exactly
+        (skipping the loss/optimizer machinery, since this is an
+        encode-time read, not a training step), with the AGI latent `x`
+        wired in as the actual conditioning signal so `.encode()` is not
+        input-independent:
+          • K3_ABSTRACT — `x` is projected (`self.lift_noise`) straight
+            into the generator's noise vector, replacing pure `randn`.
+          • ABELIAN — there is no learned lift into `(B, N, g, 2)` particle
+            space without an extra reshape head per (g, N) combination, so
+            `x` instead perturbs the uniform initial particle cloud via a
+            small low-rank nudge derived from `lift_noise(x)` reshaped/
+            broadcast across particles — cheap, shape-stable across any
+            `(g, N)`, and still latent-dependent.
+        """
         B = x.shape[0]
-        x_pos = self.lift(x)                                       # (B, N)
-        target = self._target_hodge.expand(B, -1)
-        sigma = torch.full((B, 1), 0.5, device=x.device, dtype=x.dtype)
-        x_optimal = self.hodge_model(x_pos, target, sigma)          # (B, N)
-        return self.readout(x_optimal)
+        device, dtype = x.device, x.dtype
+        target = self._target_hodge.expand(B, -1).to(dtype)
+        trainer = self.trainer
+        cond = self.lift_noise(x)                                       # (B, noise_dim)
+
+        if trainer.built.kind == hodge_one_v2.VarietyClass.ABELIAN:
+            g = trainer.built.torus.g
+            z_init = torch.rand(B, self.N, g, 2, device=device, dtype=dtype)
+            # Low-rank latent nudge: fold cond's mean/std into a per-batch
+            # offset, broadcast across (N, g, 2), then wrap to [0,1) so the
+            # torus topology is respected exactly like the trainer itself
+            # does after the model's own drift step.
+            nudge = cond.mean(dim=1, keepdim=True) * 0.05               # (B, 1)
+            z_init = (z_init + nudge.view(B, 1, 1, 1)).remainder(1.0)
+            r = z_init.std(dim=(1, 2, 3), keepdim=False).unsqueeze(-1)   # (B,1)
+            sigma = trainer._sigma_from_dispersion(r)
+            z_opt = trainer.model(z_init, target, sigma)                # (B,N,g,2)
+            periods = trainer.cycle_map(z_opt)                          # (B, period_dim)
+        else:
+            noise = cond                                                 # (B, noise_dim)
+            r = noise.std(dim=1, keepdim=True)
+            sigma = trainer._sigma_from_dispersion(r)
+            raw_vec = trainer.model(noise, target, sigma)               # (B, period_dim)
+            periods = project_to_h11_batch(trainer.built.k3, raw_vec)   # (B, period_dim)
+        return periods
+
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        periods = self._run_forward(x)                                  # (B, period_dim)
+        return self.readout(periods)
 
     def get_quality_score(self) -> float:
         """
-        [v3.4 NEW] Anti-collapse probe: mean inter-particle spacing after
-        the drift step, normalised by the initial spacing — a healthy
-        model should not let particles collapse together. Score in
-        (0, 1], clamped.
+        [v3.4.1 rewired] Real simulation-quality probe: runs one batched
+        forward pass against the fixed synthetic target and scores it with
+        the *actual* hodge_one v2 losses this variety trains against
+        (period-fit + Hodge-Riemann + integrality, plus spacing/entropy/
+        smooth for ABELIAN) — not a re-derived spacing-ratio heuristic.
+        Mapped to (0, 1] via exp(-total_loss), clamped, so lower loss ->
+        score closer to 1.0.
         """
         try:
+            trainer = self.trainer
+            dev = self._target_hodge.device
             with torch.no_grad():
-                dev = self._target_hodge.device
-                x0 = torch.linspace(0.0, 1.0, self.N, device=dev).unsqueeze(0)   # (1, N)
+                B = 1
                 target = self._target_hodge
-                sigma = torch.full((1, 1), 0.5, device=dev)
-                x_out = self.hodge_model(x0, target, sigma)
-                spacing_out = x_out[:, 1:] - x_out[:, :-1]
-                spacing_in  = x0[:, 1:] - x0[:, :-1]
-                ratio = (spacing_out.abs().mean() / spacing_in.abs().mean().clamp_min(1e-6))
-                score = float(ratio.clamp(0.0, 1.0).item())
+                if trainer.built.kind == hodge_one_v2.VarietyClass.ABELIAN:
+                    g = trainer.built.torus.g
+                    z_init = torch.rand(B, self.N, g, 2, device=dev)
+                    r = z_init.std(dim=(1, 2, 3), keepdim=False).unsqueeze(-1)
+                    sigma = trainer._sigma_from_dispersion(r)
+                    z_opt = trainer.model(z_init, target, sigma)
+                    periods = trainer.cycle_map(z_opt)
+                    total_loss, _ = compute_total_loss_abelian(
+                        z_opt, periods, target, trainer.cfg,
+                        trainer.hr_loss_fn, trainer.integrality,
+                    )
+                else:
+                    noise = torch.randn(B, trainer.cfg.noise_dim, device=dev)
+                    r = noise.std(dim=1, keepdim=True)
+                    sigma = trainer._sigma_from_dispersion(r)
+                    raw_vec = trainer.model(noise, target, sigma)
+                    periods = project_to_h11_batch(trainer.built.k3, raw_vec)
+                    total_loss, _ = compute_total_loss_k3(
+                        periods, target, trainer.cfg,
+                        trainer.hr_loss_fn, trainer.integrality,
+                    )
+                score = float(torch.exp(-total_loss.clamp_min(0.0)).clamp(0.0, 1.0).item())
             self._last_quality = score
             return score
         except Exception as exc:
@@ -4205,14 +4357,25 @@ def attach_gno_hodge_to_ecosystem(
     hodge_cfg     : Optional["SGNOHodgeConfig"] = None,
     name          : str = "structural_gno_hodge",
 ) -> Optional[GNOHodgeEncoderAdapter]:
-    """[v3.4 NEW] One-liner registration for HODGE ONE's GNOHodge surrogate."""
+    """
+    [v3.4 NEW, rewired v3.4.1] One-liner registration for HODGE ONE's
+    GNOHodge surrogate, now built through `build_gno_hodge_system()` (i.e.
+    `UnifiedHodgeOperatorTrainer`) rather than constructing the bare
+    `StructuralGNOHodge` network directly — see `GNOHodgeEncoderAdapter`
+    docstring for why the old direct-construction path no longer applies.
+
+    `hodge_cfg.variety` ("abelian" | "k3_abstract") selects which polarized
+    Hodge structure AGI ONE's hodge domain reasons over; defaults to
+    "abelian" (matching `SGNOHodgeConfig`'s own default) if `hodge_cfg`
+    is not supplied.
+    """
     if not HAS_GNO_HODGE:
-        logger.warning("attach_gno_hodge_to_ecosystem: structural_gno_hodge unavailable — skipping registration.")
+        logger.warning("attach_gno_hodge_to_ecosystem: structural_gno_hodge (or hodge_one v2) unavailable — skipping registration.")
         return None
     dev = device or torch.device("cpu")
     cfg = hodge_cfg or SGNOHodgeConfig()
-    model   = StructuralGNOHodge(cfg).to(dev)
-    wrapper = GNOHodgeEncoderAdapter(model, agi_latent_dim, device=dev).to(dev)
+    trainer = build_gno_hodge_system(cfg, dev)
+    wrapper = GNOHodgeEncoderAdapter(trainer, agi_latent_dim, device=dev).to(dev)
     orchestrator.register(name, wrapper, "hodge", agi_latent_dim, quality_fn=wrapper.get_quality_score)
     return wrapper
 
