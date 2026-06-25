@@ -374,6 +374,67 @@ except ImportError:
     HAS_GNO_EVOLUTION_BV = False
     logger.warning("✗ structural_gno_evolution_bv_standalone not found — evolution_bv domain disabled")
 
+# ── PHYSICS surrogate: Structural FNO 3D  [v3.4 NEW] ─────────────────────────
+# Tries the versioned filename first (current on-disk name), then the bare
+# name (docstring convention used elsewhere in this file / future rename).
+try:
+    from structural_fno_3d_v2_1 import StructuralFNO3D, SFNO_VERSION
+    HAS_SFNO3D = True
+    logger.info(f"✓ structural_fno_3d  (v{SFNO_VERSION})  [v3.4 NEW]")
+except ImportError:
+    try:
+        from structural_fno_3d import StructuralFNO3D, SFNO_VERSION
+        HAS_SFNO3D = True
+        logger.info(f"✓ structural_fno_3d  (v{SFNO_VERSION})  [v3.4 NEW]")
+    except ImportError:
+        HAS_SFNO3D = False
+        logger.warning("✗ structural_fno_3d not found — physics/sfno3d domain disabled")
+
+# ── MENTAL ONE surrogate: Mental Structural Neural Operator  [v3.4 NEW] ──────
+try:
+    from mental_structural_operator_v3 import MentalStructuralNeuralOperator, MSNO_VERSION
+    HAS_MSNO = True
+    logger.info(f"✓ mental_structural_operator_v3  (v{MSNO_VERSION})  [v3.4 NEW]")
+except ImportError:
+    HAS_MSNO = False
+    logger.warning("✗ mental_structural_operator_v3 not found — mental domain disabled")
+
+# ── FOLD surrogate: Structural GNO Fold  [v3.4 NEW] ──────────────────────────
+try:
+    from structural_gno_fold_v3 import StructuralGNOFold, SGNOConfig as SGNOFoldConfig, SGNO_VERSION as SGNO_FOLD_VERSION
+    HAS_GNO_FOLD = True
+    logger.info(f"✓ structural_gno_fold_v3  (v{SGNO_FOLD_VERSION})  [v3.4 NEW]")
+except ImportError:
+    HAS_GNO_FOLD = False
+    logger.warning("✗ structural_gno_fold_v3 not found — fold domain disabled")
+
+# ── HODGE surrogate: Structural GNO Hodge  [v3.4 NEW] ────────────────────────
+try:
+    from structural_gno_hodge import StructuralGNOHodge, SGNOHodgeConfig
+    HAS_GNO_HODGE = True
+    logger.info("✓ structural_gno_hodge  [v3.4 NEW]")
+except ImportError:
+    HAS_GNO_HODGE = False
+    logger.warning("✗ structural_gno_hodge not found — hodge domain disabled")
+
+# ── MATH surrogate: Structural GNO Number Theory  [v3.4 NEW] ─────────────────
+try:
+    from structural_gno_numbertheory import StructuralGNONumberTheory, SGNOConfig as SGNONumberTheoryConfig
+    HAS_GNO_NUMBERTHEORY = True
+    logger.info("✓ structural_gno_numbertheory  [v3.4 NEW]")
+except ImportError:
+    HAS_GNO_NUMBERTHEORY = False
+    logger.warning("✗ structural_gno_numbertheory not found — math domain disabled")
+
+# ── PHYSICS surrogate: NGO Physics ONE (collider / cosmo / Yang-Mills)  [v3.4 NEW]
+try:
+    from ngo_physics_one import StructuralGNOPhysics, NGOPhysicsConfig
+    HAS_NGO_PHYSICS = True
+    logger.info("✓ ngo_physics_one  [v3.4 NEW]")
+except ImportError:
+    HAS_NGO_PHYSICS = False
+    logger.warning("✗ ngo_physics_one not found — physics/ngo domain disabled")
+
 # ── Langevin bridges ──────────────────────────────────────────────────────────
 try:
     from langevin_mental_bridge import LangevinMentalBridge
@@ -3808,6 +3869,544 @@ def attach_evolution_bv_to_ecosystem(
     return wrapper
 
 
+# =============================================================================
+# [v3.4 NEW] Real adapters for the six previously-unwired surrogates:
+#   StructuralFNO3D, MentalStructuralNeuralOperator, StructuralGNOFold,
+#   StructuralGNOHodge, StructuralGNONumberTheory, StructuralGNOPhysics.
+#
+# Same pattern as GNOEvolutionBVEncoderAdapter above: a fixed (buffer-only,
+# non-learned) synthetic input scaffold + a learned `lift` (AGI latent →
+# surrogate input) and `readout` (surrogate output → AGI latent) pair. The
+# wrapped surrogate's own forward pass runs for real every call; only the
+# lift/readout heads are new trainable parameters. Each adapter satisfies
+# the flat `.encode(x) -> (B, D_agi)` protocol SurrogateAdapter expects.
+# =============================================================================
+
+class StructuralFNO3DEncoderAdapter(nn.Module):
+    """
+    [v3.4 NEW] Wraps `StructuralFNO3D` (SUPER DNS ONE surrogate).
+
+    `StructuralFNO3D.forward(u_initial, sigma, t_target)` expects a 3-D
+    voxel grid `(B, 1, Nx, Ny, Nz)` for both the field and the structural
+    regime — there is no flat-vector path, so this adapter lifts the AGI
+    latent into a small fixed-size synthetic grid, runs the real forward
+    pass, and mean-pools the predicted field (+ predictive log-variance)
+    back down to a vector.
+    """
+
+    def __init__(
+        self,
+        fno_model     : "StructuralFNO3D",
+        agi_latent_dim: int,
+        grid_size     : int = 8,
+        device        : Optional[torch.device] = None,
+    ) -> None:
+        super().__init__()
+        self.fno_model = fno_model
+        self.Nx = self.Ny = self.Nz = grid_size
+        M = grid_size ** 3
+
+        self.lift    = nn.Linear(agi_latent_dim, M)            # → u_initial field
+        self.readout = nn.Linear(2, agi_latent_dim)             # [mean, log_var] pooled
+
+        dev = device or next(fno_model.parameters(), torch.empty(0)).device
+        torch.manual_seed(0)
+        self.register_buffer("_sigma", torch.full((1, 1, grid_size, grid_size, grid_size), 0.5, device=dev))
+
+        self._last_quality: float = 0.5
+
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        B = x.shape[0]
+        u0 = self.lift(x).view(B, 1, self.Nx, self.Ny, self.Nz)
+        sigma = self._sigma.expand(B, -1, -1, -1, -1)
+        mean, log_var = self.fno_model(u0, sigma, t_target=0.5)
+        pooled = torch.stack([mean.mean(dim=[1, 2, 3, 4]), log_var.mean(dim=[1, 2, 3, 4])], dim=-1)
+        return self.readout(pooled)
+
+    def get_quality_score(self) -> float:
+        """
+        [v3.4 NEW] Predictive-uncertainty-based health probe: lower mean
+        predictive log-variance over the fixed synthetic grid → higher
+        confidence → higher score. Read-only (`torch.no_grad()`), never
+        raises, falls back to the last cached value (or neutral 0.5) on
+        any error — same contract as every other `get_quality_score()`
+        in this ecosystem.
+        """
+        try:
+            with torch.no_grad():
+                dev = self._sigma.device
+                u0 = torch.zeros(1, 1, self.Nx, self.Ny, self.Nz, device=dev)
+                _, log_var = self.fno_model(u0, self._sigma, t_target=0.5)
+                score = float(torch.exp(-log_var.mean().clamp(min=-10.0, max=10.0)).clamp(0.0, 1.0).item())
+            self._last_quality = score
+            return score
+        except Exception as exc:
+            logger.debug(f"StructuralFNO3DEncoderAdapter.get_quality_score() fallback: {exc}")
+            return self._last_quality
+
+
+def attach_sfno3d_to_ecosystem(
+    orchestrator  : "EcosystemOrchestrator",
+    agi_latent_dim: int,
+    device        : Optional[torch.device] = None,
+    fno_kwargs    : Optional[Dict[str, Any]] = None,
+    name          : str = "structural_fno_3d",
+) -> Optional[StructuralFNO3DEncoderAdapter]:
+    """
+    [v3.4 NEW] One-liner registration, mirroring `attach_evolution_bv_to_ecosystem`.
+    Returns the adapter (so a real checkpoint can be loaded into
+    `.fno_model` afterwards), or None if `structural_fno_3d` isn't
+    importable in this environment — never raises.
+    """
+    if not HAS_SFNO3D:
+        logger.warning("attach_sfno3d_to_ecosystem: structural_fno_3d unavailable — skipping registration.")
+        return None
+    dev = device or torch.device("cpu")
+    model   = StructuralFNO3D(**(fno_kwargs or {})).to(dev)
+    wrapper = StructuralFNO3DEncoderAdapter(model, agi_latent_dim, device=dev).to(dev)
+    orchestrator.register(name, wrapper, "physics", agi_latent_dim, quality_fn=wrapper.get_quality_score)
+    return wrapper
+
+
+class MentalOperatorEncoderAdapter(nn.Module):
+    """
+    [v3.4 NEW] Wraps `MentalStructuralNeuralOperator` (MENTAL ONE surrogate).
+
+    MSNO exposes four independent prediction heads rather than one
+    `forward()`. This adapter routes through `predict_eeg_trajectory`
+    (the cheapest, no-graph branch) for `.encode()`, and additionally
+    drives `optimize_ego` under `torch.no_grad()` as a lightweight second
+    signal for `get_quality_score()` — analogous to how the BV adapter
+    blends two cheap sub-probes rather than relying on just one.
+    """
+
+    def __init__(
+        self,
+        msno_model    : "MentalStructuralNeuralOperator",
+        agi_latent_dim: int,
+        seq_len       : int = 64,
+        device        : Optional[torch.device] = None,
+    ) -> None:
+        super().__init__()
+        self.msno_model = msno_model
+        self.eeg_channels = msno_model.lift_1d.in_channels
+        self.T = seq_len
+
+        self.lift    = nn.Linear(agi_latent_dim, self.eeg_channels * seq_len)
+        self.readout = nn.Linear(self.eeg_channels, agi_latent_dim)
+
+        dev = device or next(msno_model.parameters(), torch.empty(0)).device
+        self.register_buffer("_sigma", torch.full((1, 1, 1), 0.5, device=dev))
+        self.register_buffer("_action_probe", torch.zeros(1, msno_model.action_dim, device=dev))
+        self.register_buffer("_sigma_action", torch.full((1, 1), 0.5, device=dev))
+
+        self._last_quality: float = 0.5
+
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        B = x.shape[0]
+        eeg0 = self.lift(x).view(B, self.eeg_channels, self.T)
+        sigma = self._sigma.expand(B, -1, -1)
+        eeg_future = self.msno_model.predict_eeg_trajectory(eeg0, sigma)
+        pooled = eeg_future.mean(dim=-1)          # (B, eeg_channels)
+        return self.readout(pooled)
+
+    def get_quality_score(self) -> float:
+        """
+        [v3.4 NEW] `optimize_ego` stability probe: with a neutral Id/Superego
+        proposal pair, a healthy operator should output a roughly uniform
+        (high-entropy) action distribution rather than a collapsed
+        one-hot — entropy ratio to max-entropy gives a bounded [0, 1]
+        health signal. Falls back to the cached value on any failure.
+        """
+        try:
+            with torch.no_grad():
+                probs = self.msno_model.optimize_ego(
+                    self._action_probe, self._action_probe, self._sigma_action,
+                )
+                ent = -(probs.clamp_min(1e-8) * probs.clamp_min(1e-8).log()).sum(dim=-1).mean()
+                max_ent = math.log(probs.shape[-1])
+                score = float((ent / max(max_ent, 1e-8)).clamp(0.0, 1.0).item())
+            self._last_quality = score
+            return score
+        except Exception as exc:
+            logger.debug(f"MentalOperatorEncoderAdapter.get_quality_score() fallback: {exc}")
+            return self._last_quality
+
+
+def attach_msno_to_ecosystem(
+    orchestrator  : "EcosystemOrchestrator",
+    agi_latent_dim: int,
+    device        : Optional[torch.device] = None,
+    msno_kwargs   : Optional[Dict[str, Any]] = None,
+    name          : str = "mental_structural_operator",
+) -> Optional[MentalOperatorEncoderAdapter]:
+    """[v3.4 NEW] One-liner registration for MENTAL ONE's MSNO surrogate."""
+    if not HAS_MSNO:
+        logger.warning("attach_msno_to_ecosystem: mental_structural_operator_v3 unavailable — skipping registration.")
+        return None
+    dev = device or torch.device("cpu")
+    model   = MentalStructuralNeuralOperator(**(msno_kwargs or {})).to(dev)
+    wrapper = MentalOperatorEncoderAdapter(model, agi_latent_dim, device=dev).to(dev)
+    orchestrator.register(name, wrapper, "mental", agi_latent_dim, quality_fn=wrapper.get_quality_score)
+    return wrapper
+
+
+class GNOFoldEncoderAdapter(nn.Module):
+    """
+    [v3.4 NEW] Wraps `StructuralGNOFold` (REAL FOLD ONE surrogate).
+
+    `StructuralGNOFold` is single-graph (no batch dim) in both of its
+    modes. This adapter uses `forward_phase_field(u_init, sigma_3d)` — the
+    grid-graph mode — since its graph is built deterministically from grid
+    adjacency (no coordinate-dependent radius graph to keep stable across
+    a learned lift, unlike protein mode's `_build_protein_graph`). Runs
+    one real graph forward pass per batch item, exactly as
+    `GNOEvolutionBVEncoderAdapter.encode()` does for the same structural
+    reason (GNO batches in this ecosystem are per-graph, not padded).
+    """
+
+    def __init__(
+        self,
+        fold_model    : "StructuralGNOFold",
+        agi_latent_dim: int,
+        grid_size     : int = 4,
+        device        : Optional[torch.device] = None,
+    ) -> None:
+        super().__init__()
+        self.fold_model = fold_model
+        self.Nx = self.Ny = self.Nz = grid_size
+        M = grid_size ** 3
+
+        self.lift    = nn.Linear(agi_latent_dim, M)
+        self.readout = nn.Linear(1, agi_latent_dim)
+
+        dev = device or next(fold_model.parameters(), torch.empty(0)).device
+        self.register_buffer("_sigma_3d", torch.full((grid_size, grid_size, grid_size), 0.5, device=dev))
+
+        self._last_quality: float = 0.5
+
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        B = x.shape[0]
+        u0 = self.lift(x).view(B, self.Nx, self.Ny, self.Nz)
+        outs = []
+        for b in range(B):
+            u_pred = self.fold_model.forward_phase_field(u0[b], self._sigma_3d)
+            outs.append(u_pred.mean().unsqueeze(0))
+        pooled = torch.stack(outs, dim=0)          # (B, 1)
+        return self.readout(pooled)
+
+    def get_quality_score(self) -> float:
+        """
+        [v3.4 NEW] Mass-conservation probe: a well-behaved phase-field
+        surrogate should keep the mean order parameter roughly stable
+        under one forward step (Cahn-Hilliard dynamics are mass-
+        conserving). Score = exp(-|Δmean|), bounded in (0, 1].
+        """
+        try:
+            with torch.no_grad():
+                u_init = torch.zeros(self.Nx, self.Ny, self.Nz, device=self._sigma_3d.device)
+                u_pred = self.fold_model.forward_phase_field(u_init, self._sigma_3d)
+                delta = (u_pred.mean() - u_init.mean()).abs()
+                score = float(torch.exp(-delta).clamp(0.0, 1.0).item())
+            self._last_quality = score
+            return score
+        except Exception as exc:
+            logger.debug(f"GNOFoldEncoderAdapter.get_quality_score() fallback: {exc}")
+            return self._last_quality
+
+
+def attach_gno_fold_to_ecosystem(
+    orchestrator  : "EcosystemOrchestrator",
+    agi_latent_dim: int,
+    device        : Optional[torch.device] = None,
+    fold_cfg      : Optional["SGNOFoldConfig"] = None,
+    name          : str = "structural_gno_fold",
+) -> Optional[GNOFoldEncoderAdapter]:
+    """[v3.4 NEW] One-liner registration for REAL FOLD ONE's GNOFold surrogate."""
+    if not HAS_GNO_FOLD:
+        logger.warning("attach_gno_fold_to_ecosystem: structural_gno_fold_v3 unavailable — skipping registration.")
+        return None
+    dev = device or torch.device("cpu")
+    cfg = fold_cfg or SGNOFoldConfig()
+    model   = StructuralGNOFold(cfg).to(dev)
+    wrapper = GNOFoldEncoderAdapter(model, agi_latent_dim, device=dev).to(dev)
+    orchestrator.register(name, wrapper, "fold", agi_latent_dim, quality_fn=wrapper.get_quality_score)
+    return wrapper
+
+
+class GNOHodgeEncoderAdapter(nn.Module):
+    """
+    [v3.4 NEW] Wraps `StructuralGNOHodge` (HODGE ONE surrogate).
+
+    `forward(x_pos, target_hodge, sigma)` is already batched `(B, N)` /
+    `(B, period_dim)` / `(B, 1)`, so unlike Fold this needs no per-item
+    loop — the lifted particle positions and a fixed synthetic target
+    Hodge vector go straight through one real batched forward pass.
+    """
+
+    def __init__(
+        self,
+        hodge_model   : "StructuralGNOHodge",
+        agi_latent_dim: int,
+        n_particles   : int = 32,
+        device        : Optional[torch.device] = None,
+    ) -> None:
+        super().__init__()
+        self.hodge_model = hodge_model
+        self.N = n_particles
+        period_dim = hodge_model.cfg.period_dim
+
+        self.lift    = nn.Linear(agi_latent_dim, n_particles)
+        self.readout = nn.Linear(n_particles, agi_latent_dim)
+
+        dev = device or next(hodge_model.parameters(), torch.empty(0)).device
+        torch.manual_seed(0)
+        self.register_buffer("_target_hodge", torch.randn(1, period_dim, device=dev))
+
+        self._last_quality: float = 0.5
+
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        B = x.shape[0]
+        x_pos = self.lift(x)                                       # (B, N)
+        target = self._target_hodge.expand(B, -1)
+        sigma = torch.full((B, 1), 0.5, device=x.device, dtype=x.dtype)
+        x_optimal = self.hodge_model(x_pos, target, sigma)          # (B, N)
+        return self.readout(x_optimal)
+
+    def get_quality_score(self) -> float:
+        """
+        [v3.4 NEW] Anti-collapse probe: mean inter-particle spacing after
+        the drift step, normalised by the initial spacing — a healthy
+        model should not let particles collapse together. Score in
+        (0, 1], clamped.
+        """
+        try:
+            with torch.no_grad():
+                dev = self._target_hodge.device
+                x0 = torch.linspace(0.0, 1.0, self.N, device=dev).unsqueeze(0)   # (1, N)
+                target = self._target_hodge
+                sigma = torch.full((1, 1), 0.5, device=dev)
+                x_out = self.hodge_model(x0, target, sigma)
+                spacing_out = x_out[:, 1:] - x_out[:, :-1]
+                spacing_in  = x0[:, 1:] - x0[:, :-1]
+                ratio = (spacing_out.abs().mean() / spacing_in.abs().mean().clamp_min(1e-6))
+                score = float(ratio.clamp(0.0, 1.0).item())
+            self._last_quality = score
+            return score
+        except Exception as exc:
+            logger.debug(f"GNOHodgeEncoderAdapter.get_quality_score() fallback: {exc}")
+            return self._last_quality
+
+
+def attach_gno_hodge_to_ecosystem(
+    orchestrator  : "EcosystemOrchestrator",
+    agi_latent_dim: int,
+    device        : Optional[torch.device] = None,
+    hodge_cfg     : Optional["SGNOHodgeConfig"] = None,
+    name          : str = "structural_gno_hodge",
+) -> Optional[GNOHodgeEncoderAdapter]:
+    """[v3.4 NEW] One-liner registration for HODGE ONE's GNOHodge surrogate."""
+    if not HAS_GNO_HODGE:
+        logger.warning("attach_gno_hodge_to_ecosystem: structural_gno_hodge unavailable — skipping registration.")
+        return None
+    dev = device or torch.device("cpu")
+    cfg = hodge_cfg or SGNOHodgeConfig()
+    model   = StructuralGNOHodge(cfg).to(dev)
+    wrapper = GNOHodgeEncoderAdapter(model, agi_latent_dim, device=dev).to(dev)
+    orchestrator.register(name, wrapper, "hodge", agi_latent_dim, quality_fn=wrapper.get_quality_score)
+    return wrapper
+
+
+class GNONumberTheoryEncoderAdapter(nn.Module):
+    """
+    [v3.4 NEW] Wraps `StructuralGNONumberTheory` (RH/GRH/BSD ONE surrogate).
+
+    `forward(x_pos, l_params, sigma)` is batched `(B, N)` / `(B, 3)` /
+    `(B, 1)` — same shape pattern as Hodge, so no per-item loop needed.
+    `l_params = [degree, conductor, analytic_rank]` is held at a fixed
+    neutral synthetic value (RH-like: degree 1, conductor 1, rank 0).
+    """
+
+    def __init__(
+        self,
+        nt_model      : "StructuralGNONumberTheory",
+        agi_latent_dim: int,
+        n_particles   : int = 32,
+        device        : Optional[torch.device] = None,
+    ) -> None:
+        super().__init__()
+        self.nt_model = nt_model
+        self.N = n_particles
+
+        self.lift    = nn.Linear(agi_latent_dim, n_particles)
+        self.readout = nn.Linear(n_particles, agi_latent_dim)
+
+        dev = device or next(nt_model.parameters(), torch.empty(0)).device
+        self.register_buffer("_l_params", torch.tensor([[1.0, 1.0, 0.0]], device=dev))
+
+        self._last_quality: float = 0.5
+
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        B = x.shape[0]
+        x_pos = self.lift(x)                                  # (B, N)
+        l_params = self._l_params.expand(B, -1)
+        sigma = torch.full((B, 1), 0.5, device=x.device, dtype=x.dtype)
+        x_new = self.nt_model(x_pos, l_params, sigma)          # (B, N)
+        return self.readout(x_new)
+
+    def get_quality_score(self) -> float:
+        """
+        [v3.4 NEW] Drift-boundedness probe: `StructuralGNONumberTheory`
+        is documented as a *small corrector* over SSC simulation (soft-
+        clamped drift), so a healthy model should leave a uniform input
+        close to itself rather than producing a large correction. Score
+        = exp(-mean|drift|), bounded in (0, 1].
+        """
+        try:
+            with torch.no_grad():
+                dev = self._l_params.device
+                x0 = torch.linspace(0.0, 1.0, self.N, device=dev).unsqueeze(0)
+                sigma = torch.full((1, 1), 0.5, device=dev)
+                x_new = self.nt_model(x0, self._l_params, sigma)
+                drift = (x_new - x0).abs().mean()
+                score = float(torch.exp(-drift).clamp(0.0, 1.0).item())
+            self._last_quality = score
+            return score
+        except Exception as exc:
+            logger.debug(f"GNONumberTheoryEncoderAdapter.get_quality_score() fallback: {exc}")
+            return self._last_quality
+
+
+def attach_gno_numbertheory_to_ecosystem(
+    orchestrator  : "EcosystemOrchestrator",
+    agi_latent_dim: int,
+    device        : Optional[torch.device] = None,
+    nt_cfg        : Optional["SGNONumberTheoryConfig"] = None,
+    name          : str = "structural_gno_numbertheory",
+) -> Optional[GNONumberTheoryEncoderAdapter]:
+    """[v3.4 NEW] One-liner registration for the RH/GRH/BSD GNONumberTheory surrogate."""
+    if not HAS_GNO_NUMBERTHEORY:
+        logger.warning("attach_gno_numbertheory_to_ecosystem: structural_gno_numbertheory unavailable — skipping registration.")
+        return None
+    dev = device or torch.device("cpu")
+    cfg = nt_cfg or SGNONumberTheoryConfig()
+    model   = StructuralGNONumberTheory(cfg).to(dev)
+    wrapper = GNONumberTheoryEncoderAdapter(model, agi_latent_dim, device=dev).to(dev)
+    orchestrator.register(name, wrapper, "math", agi_latent_dim, quality_fn=wrapper.get_quality_score)
+    return wrapper
+
+
+class GNOPhysicsEncoderAdapter(nn.Module):
+    """
+    [v3.4 NEW] Wraps `StructuralGNOPhysics` (NGO Physics ONE surrogate;
+    collider / CMB cosmology / Yang–Mills modes).
+
+    Uses `forward_ym(momentum_data, sigma)` for `.encode()` — the
+    cheapest of the three modes (2-dim input, 1-dim output, no `lmax`-
+    sized CMB head) — analogous to the BV adapter's choice of its
+    cheapest mode for the main latent path. `get_quality_score()` instead
+    probes the collider head, since its softplus output gives a natural
+    non-negativity sanity check the YM head (which is allowed to go
+    negative near the complex-pole region) doesn't.
+    """
+
+    def __init__(
+        self,
+        physics_model : "StructuralGNOPhysics",
+        agi_latent_dim: int,
+        device        : Optional[torch.device] = None,
+    ) -> None:
+        super().__init__()
+        self.physics_model = physics_model
+
+        self.lift    = nn.Linear(agi_latent_dim, 2)     # → [p^2, alpha_s(p^2)]
+        self.readout = nn.Linear(1, agi_latent_dim)
+
+        dev = device or next(physics_model.parameters(), torch.empty(0)).device
+        self.register_buffer("_sigma", torch.full((1, 1), 0.5, device=dev))
+        self.register_buffer("_collider_probe", torch.ones(1, 4, device=dev))
+
+        self._last_quality: float = 0.5
+
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        B = x.shape[0]
+        momentum_data = self.lift(x)                    # (B, 2)
+        sigma = self._sigma.expand(B, -1)
+        d_p2 = self.physics_model.forward_ym(momentum_data, sigma)   # (B, 1)
+        return self.readout(d_p2)
+
+    def get_quality_score(self) -> float:
+        """
+        [v3.4 NEW] Collider-head non-negativity probe: `forward_collider`
+        is softplus-gated and therefore mathematically guaranteed ≥ 0, so
+        this checks numerical health (no NaN/Inf, finite magnitude) rather
+        than sign — `1.0` if the probe is a small finite positive number,
+        decaying smoothly for unusually large outputs, `0.0` on NaN/Inf.
+        """
+        try:
+            with torch.no_grad():
+                sigma = torch.full((1, 1), 0.5, device=self._sigma.device)
+                out = self.physics_model.forward_collider(self._collider_probe, sigma)
+                val = float(out.mean().item())
+            if val != val or math.isinf(val):     # NaN / Inf guard
+                score = 0.0
+            else:
+                score = float(math.exp(-abs(val)))
+            self._last_quality = min(max(score, 0.0), 1.0)
+            return self._last_quality
+        except Exception as exc:
+            logger.debug(f"GNOPhysicsEncoderAdapter.get_quality_score() fallback: {exc}")
+            return self._last_quality
+
+
+def attach_ngo_physics_to_ecosystem(
+    orchestrator  : "EcosystemOrchestrator",
+    agi_latent_dim: int,
+    device        : Optional[torch.device] = None,
+    physics_cfg   : Optional["NGOPhysicsConfig"] = None,
+    name          : str = "ngo_physics_one",
+) -> Optional[GNOPhysicsEncoderAdapter]:
+    """[v3.4 NEW] One-liner registration for NGO Physics ONE's GNOPhysics surrogate."""
+    if not HAS_NGO_PHYSICS:
+        logger.warning("attach_ngo_physics_to_ecosystem: ngo_physics_one unavailable — skipping registration.")
+        return None
+    dev = device or torch.device("cpu")
+    cfg = physics_cfg or NGOPhysicsConfig()
+    model   = StructuralGNOPhysics(cfg).to(dev)
+    wrapper = GNOPhysicsEncoderAdapter(model, agi_latent_dim, device=dev).to(dev)
+    orchestrator.register(name, wrapper, "physics", agi_latent_dim, quality_fn=wrapper.get_quality_score)
+    return wrapper
+
+
+def attach_all_surrogates_to_ecosystem(
+    orchestrator  : "EcosystemOrchestrator",
+    agi_latent_dim: int,
+    device        : Optional[torch.device] = None,
+) -> Dict[str, Optional[nn.Module]]:
+    """
+    [v3.4 NEW] Convenience one-liner that wires every surrogate this file
+    knows how to adapt — the six newly-wired modules plus EVOLUTION ONE
+    BV — onto `orchestrator` in one call. Each `attach_*` already
+    no-ops gracefully (logs a warning, returns None) if its underlying
+    module isn't importable in this environment, so this is always safe
+    to call regardless of which surrogate files happen to be present.
+
+        ecosystem = EcosystemOrchestrator(agi_latent_dim=64, device=device)
+        wrappers  = attach_all_surrogates_to_ecosystem(ecosystem, 64, device)
+
+    Returns {domain_name: adapter_or_None} for inspection/checkpoint-loading.
+    """
+    return {
+        "physics_sfno3d":   attach_sfno3d_to_ecosystem(orchestrator, agi_latent_dim, device),
+        "physics_ngo":      attach_ngo_physics_to_ecosystem(orchestrator, agi_latent_dim, device),
+        "mental":           attach_msno_to_ecosystem(orchestrator, agi_latent_dim, device),
+        "fold":             attach_gno_fold_to_ecosystem(orchestrator, agi_latent_dim, device),
+        "hodge":            attach_gno_hodge_to_ecosystem(orchestrator, agi_latent_dim, device),
+        "math_numbertheory":attach_gno_numbertheory_to_ecosystem(orchestrator, agi_latent_dim, device),
+        "evolution_bv":     attach_evolution_bv_to_ecosystem(orchestrator, agi_latent_dim, device),
+    }
+
+
 class EcosystemOrchestrator(nn.Module):
     """
     AGI ONE v3 Distributed Ecosystem Hub.
@@ -3821,12 +4420,25 @@ class EcosystemOrchestrator(nn.Module):
 
     Domain groups (match AGITrainerV3 optimizer keys):
       'physics'      → structural_fno_3d, ngo_physics_one
+                       [v3.4 NEW] real-wired via attach_sfno3d_to_ecosystem()
+                       and attach_ngo_physics_to_ecosystem()
       'fold'         → structural_gno_fold_v3
-      'evolution'    → structural_gno_evolution
+                       [v3.4 NEW] real-wired via attach_gno_fold_to_ecosystem()
+      'evolution'    → structural_gno_evolution  (still unwired — no adapter
+                       written for the plain, non-BV evolution surrogate yet)
       'evolution_bv' → structural_gno_evolution_bv_standalone  [v3.2 NEW]
       'mental'       → mental_structural_operator_v3
+                       [v3.4 NEW] real-wired via attach_msno_to_ecosystem()
       'math'         → structural_gno_numbertheory
+                       [v3.4 NEW] real-wired via attach_gno_numbertheory_to_ecosystem()
       'hodge'        → structural_gno_hodge
+                       [v3.4 NEW] real-wired via attach_gno_hodge_to_ecosystem()
+
+    [v3.4 NEW] All six adapters above follow the same lift→real-forward→
+    readout pattern as GNOEvolutionBVEncoderAdapter (see attach_all_
+    surrogates_to_ecosystem() for a one-call convenience wiring every
+    domain at once). Each `attach_*_to_ecosystem()` degrades gracefully
+    (warns, returns None) if its module isn't importable — never raises.
     """
 
     DOMAIN_ORDER: List[str] = [
@@ -5288,21 +5900,19 @@ if __name__ == "__main__":
         device=agi_v3.device,
     )
 
-    class _DummySurrogate(nn.Module):
-        def __init__(self, d_in: int, d_out: int):
-            super().__init__()
-            self.enc = nn.Linear(d_in, d_out)
-        def encode(self, x: torch.Tensor) -> torch.Tensor:
-            return self.enc(x)
+    # [v3.4 NEW] Real registration for all seven surrogates this file knows
+    # how to adapt (the six newly-wired modules + EVOLUTION ONE BV), in one
+    # call. Each attach_*() degrades gracefully (warns, returns None) if its
+    # underlying module isn't importable in this environment — replaces the
+    # pre-v3.4 `_DummySurrogate` placeholder stubs entirely.
+    wrappers = attach_all_surrogates_to_ecosystem(orchestrator, 64, agi_v3.device)
+    for dom_name, wrapper in wrappers.items():
+        if wrapper is not None:
+            print(f"  {dom_name:18s} registered  quality={wrapper.get_quality_score():.3f}")
+        else:
+            print(f"  {dom_name:18s} unavailable — skipped")
 
-    orchestrator.register("sfno3d_stub",   _DummySurrogate(64,64).to(agi_v3.device), "physics", 64)
-    orchestrator.register("gno_fold_stub", _DummySurrogate(64,64).to(agi_v3.device), "fold",    64)
-
-    # [v3.2 NEW] Real EVOLUTION BV registration (graceful no-op if the
-    # standalone file isn't present in this environment).
-    bv_wrapper = attach_evolution_bv_to_ecosystem(orchestrator, 64, agi_v3.device)
-    if bv_wrapper is not None:
-        print(f"  evolution_bv registered  quality={bv_wrapper.get_quality_score():.3f}")
+    bv_wrapper = wrappers.get("evolution_bv")
 
     # [v3.2 NEW] Unify model + orchestrator so Step 7-B's quality_report()
     # path is exercised in this smoke test too.
