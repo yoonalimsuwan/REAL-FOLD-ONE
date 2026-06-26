@@ -86,7 +86,7 @@
 #   [D] EcosystemOrchestrator — Distributed Module Hub
 #       AGI ONE v3 no longer embeds ecosystem engines directly. Instead,
 #       EcosystemOrchestrator maintains references to uploaded surrogate modules
-#       (structural_fno_3d.py, structural_gno_fold_v3.py, etc.) and queries
+#       (structural_fno_3d.py, structural_gno_fold_v4.py, etc.) and queries
 #       them via a unified adapter interface. This enables:
 #         • True distributed training (each surrogate trains independently)
 #         • Selective freezing per curriculum phase
@@ -433,14 +433,37 @@ except ImportError:
     HAS_MSNO = False
     logger.warning("✗ mental_structural_operator_v3 not found — mental domain disabled")
 
-# ── FOLD surrogate: Structural GNO Fold  [v3.4 NEW] ──────────────────────────
+# ── FOLD surrogate: Structural GNO Fold  [v3.4 NEW, rewired v3.5 for v4] ─────
+# [v3.5 NEW] structural_gno_fold was bumped v3 → v4: _build_protein_graph and
+# _build_grid_graph now build their radius graph via a sparse neighbor-list
+# (real_fold_one_v2.scipy_radius_graph / FastNeighborList, or a local
+# scipy-cKDTree / pure-PyTorch cell-list fallback) instead of a dense
+# torch.cdist(coords, coords) matrix — see structural_gno_fold_v4.py's module
+# header ("v4 FIX") for the full rationale. This only changes how edges are
+# *constructed*; StructuralGNOFold's public API (SGNOConfig, forward(),
+# forward_phase_field()) is unchanged, the produced edge_index/edge_attr are
+# identical in shape and semantics, and v4's module-level self-tests confirm
+# the sparse path reproduces the OLD dense formulation's edge set and
+# distances exactly at small N. GNOFoldEncoderAdapter below needed no logic
+# changes — only this import line moved from `_v3` to `_v4`. The new name is
+# tried first; the old `_v3` module is kept as a fallback so this file still
+# loads against an environment that hasn't picked up v4 yet.
 try:
-    from structural_gno_fold_v3 import StructuralGNOFold, SGNOConfig as SGNOFoldConfig, SGNO_VERSION as SGNO_FOLD_VERSION
+    from structural_gno_fold_v4 import StructuralGNOFold, SGNOConfig as SGNOFoldConfig, SGNO_VERSION as SGNO_FOLD_VERSION
     HAS_GNO_FOLD = True
-    logger.info(f"✓ structural_gno_fold_v3  (v{SGNO_FOLD_VERSION})  [v3.4 NEW]")
+    logger.info(f"✓ structural_gno_fold_v4  (v{SGNO_FOLD_VERSION})  [v3.5 NEW — sparse radius graph]")
 except ImportError:
-    HAS_GNO_FOLD = False
-    logger.warning("✗ structural_gno_fold_v3 not found — fold domain disabled")
+    try:
+        from structural_gno_fold_v3 import StructuralGNOFold, SGNOConfig as SGNOFoldConfig, SGNO_VERSION as SGNO_FOLD_VERSION
+        HAS_GNO_FOLD = True
+        logger.warning(
+            f"⚠ structural_gno_fold_v4 not found — fell back to structural_gno_fold_v3 "
+            f"(v{SGNO_FOLD_VERSION}). Dense O(N²) graph construction applies in this "
+            f"fallback path; install/update to v4 before running fold mode at large N."
+        )
+    except ImportError:
+        HAS_GNO_FOLD = False
+        logger.warning("✗ structural_gno_fold_v4 (or _v3 fallback) not found — fold domain disabled")
 
 # ── HODGE surrogate: Structural GNO Hodge  [v3.4 NEW, rewired v3.4.1] ────────
 # [v3.4.1 NEW] structural_gno_hodge.py was rebuilt (v2) around hodge_one v2's
@@ -4174,9 +4197,16 @@ def attach_gno_fold_to_ecosystem(
     fold_cfg      : Optional["SGNOFoldConfig"] = None,
     name          : str = "structural_gno_fold",
 ) -> Optional[GNOFoldEncoderAdapter]:
-    """[v3.4 NEW] One-liner registration for REAL FOLD ONE's GNOFold surrogate."""
+    """
+    [v3.4 NEW, rewired v3.5] One-liner registration for REAL FOLD ONE's
+    GNOFold surrogate — now backed by structural_gno_fold_v4 (sparse
+    radius-graph construction; see the import block above for why). No
+    change to this function's own logic was required: `StructuralGNOFold`
+    and `SGNOConfig` keep the same constructor/forward signatures in v4,
+    so the adapter wiring below is identical to the v3 wiring.
+    """
     if not HAS_GNO_FOLD:
-        logger.warning("attach_gno_fold_to_ecosystem: structural_gno_fold_v3 unavailable — skipping registration.")
+        logger.warning("attach_gno_fold_to_ecosystem: structural_gno_fold_v4 (or _v3 fallback) unavailable — skipping registration.")
         return None
     dev = device or torch.device("cpu")
     cfg = fold_cfg or SGNOFoldConfig()
@@ -4585,7 +4615,8 @@ class EcosystemOrchestrator(nn.Module):
       'physics'      → structural_fno_3d, ngo_physics_one
                        [v3.4 NEW] real-wired via attach_sfno3d_to_ecosystem()
                        and attach_ngo_physics_to_ecosystem()
-      'fold'         → structural_gno_fold_v3
+      'fold'         → structural_gno_fold_v4 [v3.5 rewired: sparse radius
+                       graph, no API change]
                        [v3.4 NEW] real-wired via attach_gno_fold_to_ecosystem()
       'evolution'    → structural_gno_evolution  (still unwired — no adapter
                        written for the plain, non-BV evolution surrogate yet)
