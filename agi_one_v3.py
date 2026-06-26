@@ -223,39 +223,7 @@
 #   Geometry-aware Manifold Diffusion (Song et al. 2020+)
 #
 # =============================================================================
-# ONE ECOSYSTEM INTEGRATION MAP — 23 modules
-# ───────────────────────────────────────────
-#   one_core_v3.py                            → shared SSC/CSOC/Itô
-#   one_core_mental.py                        → mental-scale primitives
-#   one_core_fold.py                          → protein primitives
-#   one_core_evolution_v2.py                  → genomic primitives
-#   mental_one.py                             → psychiatric/EEG/fMRI
-#   psy_one_bridge_diff.py                    → Id/Ego/Superego triad
-#   langevin_mental_bridge.py                 → Langevin↔brain
-#   structural_langevin_mental.py             → Langevin mental
-#   real_fold_one_v2.py                       → protein folding
-#   real_fold_one_ht_v2.py                    → HT protein folding
-#   structural_langevin_fold_v2.py            → Langevin MD fold
-#   evolution_one_v3.py                       → cancer/somatic evolution
-#   evolution_one_epidemiological_viral_v4.py → epidemiology/viral
-#   structural_langevin_evo_v3.py             → Langevin evolutionary
-#   structuralfluctuatinghydro_v6.py          → 3-D fluctuating hydro
-#   super_dns_one_v6.py                       → compressible DNS/LES
-#   structural_langevin_v3.py                 → Langevin MD BAOAB
-#   standard_one.py                           → Standard Model
-#   yang_mills_mass_gap_one.py                → Yang-Mills mass gap
-#   rh_one.py                                 → RH computational explorer
-#   bsd_one.py            [NEW v2.0]          → Birch–Swinnerton-Dyer
-#   grh_one.py            [NEW v2.0]          → Generalized RH
-#   hodge_one.py          [NEW v2.0]          → Hodge Conjecture explorer
-#   agi_one_id_ego_superego_plus.py [NEW v3.1] → speculative-axiom evolution
-#                                               + opt-in multi-LLM consensus
-#   structural_gno_evolution_bv_standalone.py [NEW v3.2] → EVOLUTION ONE
-#                                               GNO surrogate + genuine BV
-#                                               (Batalin-Vilkovisky) layer
-#                                               + Mode-4 cell population
-#                                               [v3.3]; registered as domain
-#                                               "evolution_bv"
+# 
 #
 # =============================================================================
 # OPEN SCIENCE & DATA PROVENANCE
