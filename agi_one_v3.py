@@ -313,70 +313,42 @@ AGI_ONE_VERSION: str = "3.4.1"
 # =============================================================================
 
 # ── ONE Core primitives ───────────────────────────────────────────────────────
-try:
-    from one_core_mental import (
-        SemanticStateContraction,
-        CSOCBase,
-        InterfaceDetectorBase,
-        StructuralItoBase,
-        DifferentiableRG,
-        DifferentiableSOC,
-        soft_clamp,
-        MENTAL_VERSION,
-    )
-    HAS_ONE_CORE_MENTAL = True
-    logger.info(f"✓ one_core_mental  (v{MENTAL_VERSION})")
-except ImportError:
-    HAS_ONE_CORE_MENTAL = False
-    logger.warning("✗ one_core_mental not found — inline fallbacks active")
-    def soft_clamp(x, lo, hi):
-        c = (hi + lo) / 2.0; s = (hi - lo) / 2.0 + 1e-8
-        return c + s * torch.tanh((x - c) / s)
+# [v3.5 NEW] one_core_mental / one_core_v3 / one_core_fold / one_core_evolution_v2
+# were optional-import utility primitives (SemanticStateContraction, CSOCBase,
+# DifferentiableSOC, DifferentiableRG, soft_clamp, ...) with an in-file fallback
+# already used whenever they weren't importable. Per Yoon's instruction, AGI ONE
+# now calls ONLY the seven already-wired surrogate modules (structural_gno_fold,
+# structural_gno_hodge, mental_structural_operator_v3, structural_fno_3d_v2_1,
+# structural_gno_evolution_bv_standalone, ngo_physics_one,
+# structural_gno_numbertheory) and never reaches into any other ecosystem
+# module directly — so these four imports are removed outright and every
+# call site below now unconditionally uses the local fallback implementation
+# (SemanticStateContraction/DifferentiableSOC/DifferentiableRG → None with the
+# pre-existing None-fallback branch each class already had; soft_clamp → the
+# plain-tanh version below, used everywhere unconditionally).
+HAS_ONE_CORE_MENTAL = False
+HAS_ONE_CORE         = False
+HAS_ONE_CORE_FOLD    = False
+HAS_ONE_CORE_EVO     = False
 
-try:
-    from one_core_v3 import (
-        SemanticStateContraction as SSC_Core,
-        CSOCBase as CSOCBase_Core,
-        get_device as get_device_core,
-        ONE_VERSION,
-    )
-    HAS_ONE_CORE = True
-    logger.info(f"✓ one_core_v3  (v{ONE_VERSION})")
-except ImportError:
-    HAS_ONE_CORE = False
+def soft_clamp(x, lo, hi):
+    c = (hi + lo) / 2.0; s = (hi - lo) / 2.0 + 1e-8
+    return c + s * torch.tanh((x - c) / s)
 
-try:
-    from one_core_fold import SemanticStateContraction as SSC_Fold
-    HAS_ONE_CORE_FOLD = True
-    logger.info("✓ one_core_fold")
-except ImportError:
-    HAS_ONE_CORE_FOLD = False
+# [v3.5 NEW] mental_one (the raw engine) removed — not one of the seven
+# wired surrogates; MENTAL ONE is represented in AGI ONE only via
+# mental_structural_operator_v3 (MentalStructuralNeuralOperator), already
+# wired through attach_msno_to_ecosystem(). HAS_MENTAL_ONE forced False so
+# the self.mental_one assignment a few hundred lines down resolves to None
+# without needing its own edit.
+HAS_MENTAL_ONE = False
 
-try:
-    from one_core_evolution_v2 import SemanticStateContraction as SSC_Evo
-    HAS_ONE_CORE_EVO = True
-    logger.info("✓ one_core_evolution_v2")
-except ImportError:
-    HAS_ONE_CORE_EVO = False
-
-# ── MENTAL ONE ────────────────────────────────────────────────────────────────
-try:
-    from mental_one import MentalONEEngine
-    HAS_MENTAL_ONE = True
-    logger.info("✓ mental_one")
-except ImportError:
-    HAS_MENTAL_ONE = False
-
-# ── PSY ONE BRIDGE ────────────────────────────────────────────────────────────
-try:
-    from psy_one_bridge_diff import (
-        PsycheTriad, PsycheConfig, PsycheTriadState,
-        PsychopathologyMode, GumbelAnnealScheduler,
-    )
-    HAS_PSY_BRIDGE = True
-    logger.info("✓ psy_one_bridge_diff")
-except ImportError:
-    HAS_PSY_BRIDGE = False
+# [v3.5 NEW] psy_one_bridge_diff import removed — not one of the seven wired
+# surrogates. The PsycheTriad/PsycheConfig integration block inside
+# PsycheExecutiveLayer (which called into it directly) is removed below too;
+# PsycheExecutiveLayer's own planner_net/safety_net/normative_policy (always
+# present, no external dependency) continue to provide Id/Ego/Superego
+# behaviour unchanged.
 
 # ── AGI ONE : Id, Ego, Super Ego / Plus  [v3.1 NEW] ──────────────────────────
 # Speculative-axiom evolution layer + opt-in multi-LLM external consensus.
@@ -510,130 +482,41 @@ except ImportError:
     HAS_NGO_PHYSICS = False
     logger.warning("✗ ngo_physics_one not found — physics/ngo domain disabled")
 
-# ── Langevin bridges ──────────────────────────────────────────────────────────
-try:
-    from langevin_mental_bridge import LangevinMentalBridge
-    HAS_LANGEVIN_MENTAL = True
-    logger.info("✓ langevin_mental_bridge")
-except ImportError:
-    HAS_LANGEVIN_MENTAL = False
-
-try:
-    from structural_langevin_mental import StructuralLangevinMental
-    HAS_STRUCT_LANG_MENTAL = True
-    logger.info("✓ structural_langevin_mental")
-except ImportError:
-    HAS_STRUCT_LANG_MENTAL = False
-
-# ── REAL FOLD ONE ─────────────────────────────────────────────────────────────
-try:
-    from real_fold_one_v2 import RealFoldONEEngine
-    HAS_REAL_FOLD = True
-    logger.info("✓ real_fold_one_v2")
-except ImportError:
-    HAS_REAL_FOLD = False
-
-try:
-    from real_fold_one_ht_v2 import RealFoldHTEngine
-    HAS_REAL_FOLD_HT = True
-    logger.info("✓ real_fold_one_ht_v2")
-except ImportError:
-    HAS_REAL_FOLD_HT = False
-
-try:
-    from structural_langevin_fold_v2 import StructuralLangevinFold
-    HAS_LANGEVIN_FOLD = True
-    logger.info("✓ structural_langevin_fold_v2")
-except ImportError:
-    HAS_LANGEVIN_FOLD = False
-
-# ── EVOLUTION ONE ─────────────────────────────────────────────────────────────
-try:
-    from evolution_one_v3 import EvolutionONEEngine
-    HAS_EVOLUTION = True
-    logger.info("✓ evolution_one_v3")
-except ImportError:
-    HAS_EVOLUTION = False
-
-try:
-    from evolution_one_epidemiological_viral_v4 import EpidemicEngine
-    HAS_EPIDEMIC = True
-    logger.info("✓ evolution_one_epidemiological_viral_v4")
-except ImportError:
-    HAS_EPIDEMIC = False
-
-try:
-    from structural_langevin_evo_v3 import StructuralLangevinEvo
-    HAS_LANGEVIN_EVO = True
-    logger.info("✓ structural_langevin_evo_v3")
-except ImportError:
-    HAS_LANGEVIN_EVO = False
-
-# ── PHYSICS ───────────────────────────────────────────────────────────────────
-try:
-    from structuralfluctuatinghydro_v6 import StructuralFluctuatingHydro
-    HAS_FH = True
-    logger.info("✓ structuralfluctuatinghydro_v6")
-except ImportError:
-    HAS_FH = False
-
-try:
-    from super_dns_one_v6 import SuperDNSEngine
-    HAS_DNS = True
-    logger.info("✓ super_dns_one_v6")
-except ImportError:
-    HAS_DNS = False
-
-try:
-    from structural_langevin_v3 import StructuralLangevinMD
-    HAS_LANGEVIN_MD = True
-    logger.info("✓ structural_langevin_v3")
-except ImportError:
-    HAS_LANGEVIN_MD = False
-
-# ── STANDARD MODEL / MATHEMATICS ─────────────────────────────────────────────
-try:
-    from standard_one import StandardONEEngine
-    HAS_STANDARD = True
-    logger.info("✓ standard_one")
-except ImportError:
-    HAS_STANDARD = False
-
-try:
-    from yang_mills_mass_gap_one import YangMillsMassGapEngine
-    HAS_YANG_MILLS = True
-    logger.info("✓ yang_mills_mass_gap_one")
-except ImportError:
-    HAS_YANG_MILLS = False
-
-try:
-    from rh_one__1_ import RiemannHypothesisEngine
-    HAS_RH = True
-    logger.info("✓ rh_one")
-except ImportError:
-    HAS_RH = False
-
-# ── NEW v2.0: Mathematics trilogy ────────────────────────────────────────────
-try:
-    import bsd_one as bsd
-    HAS_BSD = True
-    logger.info("✓ bsd_one  [v2.0 NEW]")
-except ImportError:
-    HAS_BSD = False
-
-try:
-    import grh_one as grh
-    HAS_GRH = True
-    logger.info("✓ grh_one  [v2.0 NEW]")
-except ImportError:
-    HAS_GRH = False
-
-try:
-    import hodge_one as hodge
-    HAS_HODGE = True
-    logger.info("✓ hodge_one  [v2.0 NEW]")
-except ImportError:
-    HAS_HODGE = False
+# [v3.5 NEW] The following direct engine-level imports were removed —
+# none of these are among the seven surrogate modules AGI ONE is now scoped
+# to call (structural_gno_fold_v4, structural_gno_hodge,
+# mental_structural_operator_v3, structural_fno_3d_v2_1,
+# structural_gno_evolution_bv_standalone, ngo_physics_one,
+# structural_gno_numbertheory). All were previously only instantiated into
+# self.* attributes consumed solely by the status/quality_report dict
+# further below (never called in any forward pass), except BSD/GRH/HODGE
+# (queried directly inside MathReasoningLayer.forward — that whole layer is
+# removed below) and the Langevin bridges (also status-only). Removed:
+#   langevin_mental_bridge, structural_langevin_mental,
+#   real_fold_one_v2.RealFoldONEEngine, real_fold_one_ht_v2,
+#   structural_langevin_fold_v2, evolution_one_v3, evolution_one_epidemiological_viral_v4,
+#   structural_langevin_evo_v3, structuralfluctuatinghydro_v6, super_dns_one_v6,
+#   structural_langevin_v3, standard_one, yang_mills_mass_gap_one, rh_one__1_,
+#   bsd_one, grh_one, hodge_one (the old direct-query path — `hodge_one` is
+#   still imported further up, but only as the structural_gno_hodge enum
+#   dependency, per Yoon's explicit instruction to keep that one).
+HAS_LANGEVIN_MENTAL    = False
+HAS_STRUCT_LANG_MENTAL = False
+HAS_REAL_FOLD          = False
+HAS_REAL_FOLD_HT       = False
+HAS_LANGEVIN_FOLD      = False
+HAS_EVOLUTION          = False
+HAS_EPIDEMIC           = False
+HAS_LANGEVIN_EVO       = False
+HAS_FH                 = False
+HAS_DNS                = False
+HAS_LANGEVIN_MD        = False
+HAS_STANDARD           = False
+HAS_YANG_MILLS         = False
+HAS_RH                 = False
+HAS_BSD                = False
+HAS_GRH                = False
+HAS_HODGE              = False
 
 # ── Optional: HuggingFace / torchvision / torchaudio ─────────────────────────
 try:
@@ -819,6 +702,14 @@ class AGIConfig:
     use_timeseries       : bool  = True
 
     # ── ONE Ecosystem ─────────────────────────────────────────────────────────
+    # [v3.5 NEW] These flags previously gated the direct engine-level
+    # imports removed above (mental_one, real_fold_one_v2, evolution_one_v3,
+    # the physics engines, standard_one, yang_mills_mass_gap_one, rh_one,
+    # bsd_one/grh_one/hodge_one via MathReasoningLayer, psy_one_bridge_diff).
+    # They no longer gate anything — kept only so AGIConfig(...) and
+    # build_agi_one(use_all_modules=...) stay backward-compatible for
+    # existing callers that still pass them; setting any of these to a
+    # different value has no effect on AGI ONE's behaviour anymore.
     use_mental_one       : bool  = True
     use_psy_bridge       : bool  = True
     use_real_fold        : bool  = True
@@ -961,14 +852,12 @@ class SSCStabilizer(nn.Module):
         super().__init__()
         self.d_model = d_model
 
-        if HAS_ONE_CORE_MENTAL:
-            self.ssc = SemanticStateContraction(epsilon_fp=epsilon_fp)
-        else:
-            # Fallback: learnable EMA coefficient per channel
-            self.log_alpha = nn.Parameter(
-                torch.full((d_model,), math.log(epsilon_fp))
-            )
-            self.ssc = None
+        # [v3.5 NEW] one_core_mental import removed (see top of file) — SSC
+        # always uses the local learnable-EMA fallback now, unconditionally.
+        self.log_alpha = nn.Parameter(
+            torch.full((d_model,), math.log(epsilon_fp))
+        )
+        self.ssc = None
 
         # Projection: refine state after SSC
         self.refine = nn.Sequential(
@@ -1111,19 +1000,14 @@ class CSOCComputeController(nn.Module):
         self.max_layers  = max_layers
         self.sigma_target = sigma_target
 
-        # SSC for smoothing criticality signal
-        if HAS_ONE_CORE_MENTAL:
-            self.ssc = SemanticStateContraction(epsilon_fp, sigma_target)
-        else:
-            self.ssc = None
-
-        # DifferentiableSOC for criticality dynamics
-        if HAS_ONE_CORE_MENTAL:
-            self.diff_soc = DifferentiableSOC(
-                base_temp=300.0, beta=0.01, n_steps=5
-            )
-        else:
-            self.diff_soc = None
+        # [v3.5 NEW] one_core_mental import removed (see top of file) — both
+        # the SSC smoother and DifferentiableSOC were optional enhancements
+        # that already had a None fallback (self.ssc is None below routes
+        # compute_criticality() to use the raw, unsmoothed score directly;
+        # self.diff_soc was assigned but never read elsewhere in this class,
+        # so dropping it has no behavioural effect).
+        self.ssc      = None
+        self.diff_soc = None
 
         # Criticality estimator: score ∈ [0, 1]
         self.critic_net = nn.Sequential(
@@ -1216,11 +1100,10 @@ class StructuralLangevinDiffusion(nn.Module):
         # Learnable scale
         self.log_dt = nn.Parameter(torch.tensor(math.log(dt)))
 
-        # RG smoother for G field
-        if HAS_ONE_CORE_MENTAL:
-            self.rg = DifferentiableRG(kernel_size=5)
-        else:
-            self.rg = None
+        # [v3.5 NEW] one_core_mental import removed (see top of file) — `rg`
+        # was assigned but never read elsewhere in this class, so it's kept
+        # as a permanent None stub (no behavioural change).
+        self.rg = None
 
     def _g_field(self, x: torch.Tensor) -> torch.Tensor:
         """G(x) = 1 + amp · interface_mask(x)  shape: same as x."""
@@ -1817,27 +1700,14 @@ class PsycheExecutiveLayer(nn.Module):
             torch.ones(action_dim) / action_dim
         )
 
-        # PSY ONE BRIDGE integration
-        self.psy_triad  : Optional[Any] = None
+        # [v3.5 NEW] PSY ONE BRIDGE (psy_one_bridge_diff) integration removed
+        # — not one of the seven surrogate modules AGI ONE now calls directly.
+        # psy_triad/gumbel_sched stay permanently None; forward() below falls
+        # straight through its existing None-branch, so executive_action is
+        # produced purely by planner_net/safety_net/normative_policy, exactly
+        # as it already was whenever HAS_PSY_BRIDGE was False.
+        self.psy_triad   : Optional[Any] = None
         self.gumbel_sched: Optional[Any] = None
-        if cfg.use_psy_bridge and HAS_PSY_BRIDGE:
-            try:
-                mode = PsychopathologyMode(cfg.psyche_mode)
-            except ValueError:
-                mode = PsychopathologyMode.HEALTHY
-            self.psy_triad = PsycheTriad(PsycheConfig(
-                action_dim     = action_dim,
-                lambda_reg     = cfg.lambda_reg,
-                mode           = mode,
-                gumbel_tau     = cfg.gumbel_tau,
-                gumbel_hard    = cfg.gumbel_hard,
-                anderson_depth = cfg.anderson_depth,
-                device         = device,
-            ))
-            self.gumbel_sched = GumbelAnnealScheduler(
-                tau_start=1.0, tau_end=0.1, total_steps=50_000
-            )
-            logger.info("✓ PsycheTriad integrated into PsycheExecutiveLayer")
 
         self.to(device)
 
@@ -1861,20 +1731,13 @@ class PsycheExecutiveLayer(nn.Module):
 
         drive = self.goal_generator(ws).squeeze(0)   # (action_dim,)
 
-        # ── PSY BRIDGE (if available): use full differentiable triad ─────────
+        # [v3.5 NEW] PSY ONE BRIDGE forward path removed along with the
+        # __init__ wiring above — psy_triad is always None now, so
+        # psyche_state/psy_loss are always None (same as the pre-existing
+        # "library not found" behaviour), and `drive` flows straight from
+        # the goal_generator into the Ego planning step below unchanged.
         psyche_state = None
         psy_loss     = None
-        if self.psy_triad is not None:
-            try:
-                tau = self.gumbel_sched.step() if self.gumbel_sched else 1.0
-                self.psy_triad.config.gumbel_tau = tau
-                # Adapt drive to expected distribution
-                drive_in = F.softmax(drive, dim=-1)
-                psyche_state, psy_loss = self.psy_triad(drive_in)
-                if psyche_state.soft_action is not None:
-                    drive = psyche_state.soft_action
-            except Exception as e:
-                logger.debug(f"PsycheTriad exec: {e}")
 
         # ── Ego: Iterative Planning (DEQ-style fixed-point) ──────────────────
         norm_pol = F.softmax(self.normative_policy, dim=-1)
@@ -2827,113 +2690,17 @@ class PPOTrainer:
         return stats
 
 
+
 # =============================================================================
-# SECTION 15 — MATH REASONING LAYER [v2.0 NEW]
-# Integrates BSD ONE, GRH ONE, HODGE ONE
+# SECTION 15 — [v3.5 REMOVED] MATH REASONING LAYER
+# Previously integrated BSD ONE / GRH ONE / HODGE ONE by querying
+# bsd_one.EllipticCurveLFunction / grh_one.GeneralizedLFunction /
+# hodge_one.get_device directly. Removed per Yoon's instruction: AGI ONE's
+# math-domain reasoning now comes only from the two already-wired GNO
+# surrogates — structural_gno_numbertheory (domain "math_numbertheory") and
+# structural_gno_hodge (domain "hodge") — both registered through
+# EcosystemOrchestrator/attach_*_to_ecosystem(), not called directly here.
 # =============================================================================
-
-class MathReasoningLayer(nn.Module):
-    """
-    [v2.0 NEW] Mathematical Reasoning via BSD/GRH/HODGE ONE.
-
-    Provides abstract mathematical reasoning capabilities by querying
-    the mathematical computation modules. Outputs a math-reasoning
-    latent vector that contributes to the Global Workspace.
-
-    Modules:
-    - BSD ONE  : Birch–Swinnerton-Dyer (elliptic curve L-functions)
-    - GRH ONE  : Generalized Riemann Hypothesis (L-function zeros)
-    - HODGE ONE: Hodge Conjecture (algebraic cycles / period maps)
-
-    These modules contribute to AGI's capacity for abstract structural
-    reasoning — recognising deep patterns across domains by analogy
-    with mathematical universality (e.g. GUE statistics, SOC universality
-    chain, Yang-Mills mass gap).
-    """
-
-    def __init__(self, latent_dim: int, device: torch.device) -> None:
-        super().__init__()
-        self.latent_dim = latent_dim
-        self.device     = device
-
-        # Project math module outputs to latent space
-        self.bsd_proj   = nn.Linear(8,  latent_dim)
-        self.grh_proj   = nn.Linear(8,  latent_dim)
-        self.hodge_proj = nn.Linear(8,  latent_dim)
-
-        # Combine with attention
-        self.combine = nn.MultiheadAttention(
-            embed_dim=latent_dim, num_heads=4, batch_first=True,
-        )
-        self.norm = nn.LayerNorm(latent_dim)
-
-        self.to(device)
-
-    def _query_bsd(self) -> Optional[torch.Tensor]:
-        """Query BSD ONE for current L-function statistics."""
-        if not HAS_BSD:
-            return None
-        try:
-            curve  = bsd.EllipticCurveLFunction("11a1", 11, rank=0)
-            t_vals = torch.linspace(2, 50, 8, device="cpu")
-            dens   = curve.density_torch(t_vals)
-            feat   = dens / (dens.abs().max() + 1e-8)
-            return feat.detach().to(self.device)
-        except Exception as e:
-            logger.debug(f"BSD query: {e}")
-            return None
-
-    def _query_grh(self) -> Optional[torch.Tensor]:
-        """Query GRH ONE for L-function zero statistics."""
-        if not HAS_GRH:
-            return None
-        try:
-            lf     = grh.GeneralizedLFunction("GRH_test", degree=1, conductor=5.0)
-            t_vals = torch.linspace(2, 50, 8, device="cpu")
-            dens   = lf.density_torch(t_vals)
-            feat   = dens / (dens.abs().max() + 1e-8)
-            return feat.detach().to(self.device)
-        except Exception as e:
-            logger.debug(f"GRH query: {e}")
-            return None
-
-    def _query_hodge(self) -> Optional[torch.Tensor]:
-        """Query HODGE ONE for period map statistics."""
-        if not HAS_HODGE:
-            return None
-        try:
-            # Use Hodge device detection
-            dev    = hodge.get_device("cpu")
-            pos    = torch.linspace(0, 2 * math.pi, 8, device=dev)
-            feat   = pos / (pos.max() + 1e-8)
-            return feat.detach().to(self.device)
-        except Exception as e:
-            logger.debug(f"Hodge query: {e}")
-            return None
-
-    def forward(self) -> Optional[torch.Tensor]:
-        """
-        Returns:
-            math_latent : (latent_dim,) or None
-        """
-        feats = []
-        for qfn, proj in [
-            (self._query_bsd,   self.bsd_proj),
-            (self._query_grh,   self.grh_proj),
-            (self._query_hodge, self.hodge_proj),
-        ]:
-            f = qfn()
-            if f is not None:
-                feats.append(proj(f.unsqueeze(0)))   # (1, D)
-
-        if not feats:
-            return None
-
-        tokens  = torch.cat(feats, dim=0).unsqueeze(0)   # (1, n_math, D)
-        out, _  = self.combine(tokens, tokens, tokens)
-        out     = self.norm(out)
-        return out[0, 0, :]   # (D,)
-
 
 # =============================================================================
 # SECTION 16 — AGI STATE
@@ -3020,8 +2787,9 @@ class AGIONE(nn.Module):
     │  PsycheExecutiveLayer← Id→Goal / Ego→Plan / Superego→Safety     │
     │  PsychePlus          ← speculative-axiom evolution + multi-LLM  │
     │                         consensus (opt-in)            [v3.1]    │
-    │  MultiScaleIntegrator← 23 ONE Ecosystem modules                 │
-    │  MathReasoningLayer  ← BSD / GRH / HODGE ONE                    │
+    │  MultiScaleIntegrator← 7 wired GNO surrogate adapters [v3.5]     │
+    │                         (fold/hodge/mental/physics_sfno3d/       │
+    │                         physics_ngo/math_numbertheory/evo_bv)   │
     │  SSCStabilizer       ← per-layer latent stabilization           │
     │  InterfaceAttention  ← phase-transition attention prior         │
     │  CSOCComputeController ← edge-of-chaos adaptive depth           │
@@ -3135,22 +2903,34 @@ class AGIONE(nn.Module):
             )
             logger.info("✓ Psyche Plus speculative-axiom layer attached to AGI ONE core.")
 
-        # ── [10] ONE Ecosystem Modules (preserved from v1.0) ─────────────────
-        self.mental_one      = MentalONEEngine()    if cfg.use_mental_one  and HAS_MENTAL_ONE  else None
-        self.real_fold       = RealFoldONEEngine()  if cfg.use_real_fold   and HAS_REAL_FOLD   else None
-        self.evolution_one   = EvolutionONEEngine() if cfg.use_evolution   and HAS_EVOLUTION   else None
-        self.epidemic_engine = EpidemicEngine()     if cfg.use_evolution   and HAS_EPIDEMIC    else None
-        self.dns_engine      = SuperDNSEngine()     if cfg.use_physics     and HAS_DNS         else None
-        self.fh_engine       = StructuralFluctuatingHydro() if cfg.use_physics and HAS_FH     else None
-        self.standard_one    = StandardONEEngine()  if cfg.use_standard_one and HAS_STANDARD   else None
-        self.yang_mills      = YangMillsMassGapEngine() if cfg.use_yang_mills and HAS_YANG_MILLS else None
-        self.rh_engine       = RiemannHypothesisEngine() if cfg.use_rh and HAS_RH               else None
+        # ── [10] [v3.5 REMOVED] ONE Ecosystem direct-engine block ────────────
+        # Previously instantiated MentalONEEngine / RealFoldONEEngine /
+        # EvolutionONEEngine / EpidemicEngine / SuperDNSEngine /
+        # StructuralFluctuatingHydro / StandardONEEngine /
+        # YangMillsMassGapEngine / RiemannHypothesisEngine directly. None of
+        # these were ever called in a forward pass (self.mental_one etc. were
+        # read only by the status/quality_report dict below) — removed per
+        # Yoon's instruction that AGI ONE call only the seven wired GNO
+        # surrogates. Kept as None stubs so quality_report()'s "... is not
+        # None" checks further below keep working unchanged (all now
+        # unconditionally report False/absent, same as when these libraries
+        # were simply not installed).
+        self.mental_one      = None
+        self.real_fold       = None
+        self.evolution_one   = None
+        self.epidemic_engine = None
+        self.dns_engine      = None
+        self.fh_engine       = None
+        self.standard_one    = None
+        self.yang_mills      = None
+        self.rh_engine       = None
 
-        # ── [11] Math Reasoning Layer (BSD / GRH / HODGE) ────────────────────
-        if cfg.use_bsd or cfg.use_grh or cfg.use_hodge:
-            self.math_layer = MathReasoningLayer(D, device)
-        else:
-            self.math_layer = None
+        # ── [11] [v3.5 REMOVED] Math Reasoning Layer (BSD / GRH / HODGE) ─────
+        # MathReasoningLayer (queried bsd_one/grh_one/hodge_one directly) was
+        # removed — see SECTION 15 above. Math-domain reasoning now comes
+        # only from the structural_gno_numbertheory and structural_gno_hodge
+        # surrogates wired through EcosystemOrchestrator.
+        self.math_layer = None
 
         # ── [12] Multi-Scale Integrator ───────────────────────────────────────
         self.multiscale = MultiScaleIntegrator(D, device)
@@ -3525,17 +3305,27 @@ class AGIONE(nn.Module):
             "struct_langevin_diff"   : True,
             "loss_balancer_kendall"  : True,
             "ppo_full"               : True,
-            "math_bsd_one"           : HAS_BSD,
-            "math_grh_one"           : HAS_GRH,
-            "math_hodge_one"         : HAS_HODGE,
-            "mental_one"             : self.mental_one is not None,
-            "real_fold_one"          : self.real_fold is not None,
-            "evolution_one"          : self.evolution_one is not None,
-            "epidemic_engine"        : self.epidemic_engine is not None,
-            "dns_cfd"                : self.dns_engine is not None,
-            "standard_one"           : self.standard_one is not None,
-            "yang_mills"             : self.yang_mills is not None,
-            "rh_explorer"            : self.rh_engine is not None,
+            # [v3.5 NEW] The keys below previously reflected direct engine /
+            # raw-module imports (bsd_one, grh_one, hodge_one, mental_one,
+            # real_fold_one_v2, evolution_one_v3, etc.) that AGI ONE no
+            # longer calls directly — see SECTION 15 and the "[10]" /
+            # "[11]" removal notes above. They're kept here, hardcoded
+            # False, only so any external code reading this dict's key set
+            # doesn't break; the real status for these domains is reported
+            # by EcosystemOrchestrator.quality_report() instead, via the
+            # seven wired surrogate adapters (fold/hodge/mental/physics_*/
+            # evolution_bv/math_numbertheory).
+            "math_bsd_one"           : False,
+            "math_grh_one"           : False,
+            "math_hodge_one"         : False,
+            "mental_one"             : False,
+            "real_fold_one"          : False,
+            "evolution_one"          : False,
+            "epidemic_engine"        : False,
+            "dns_cfd"                : False,
+            "standard_one"           : False,
+            "yang_mills"             : False,
+            "rh_explorer"            : False,
             "open_science_registry"  : True,
         }
 
