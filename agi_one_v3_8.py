@@ -202,6 +202,33 @@
 #         switch selecting which polarized Hodge structure AGI ONE's hodge
 #         domain reasons over; default "abelian" matches `SGNOHodgeConfig`.
 #
+# v3.9.0  EVOLUTION BV — Ne-Confidence-Weighted Quality Blend  [NEW]
+#         Primary developer of this patch: Claude (Anthropic). Gemini, GPT,
+#         and DeepSeek not involved in this revision.
+#   MOTIVATION: v3.3/v3.7's Mode-4 + POP-2 quality signals were always
+#         simple-averaged with BV-3 certification, regardless of how
+#         drift-dominated the underlying small-N `cellpop_bridge.rollout`
+#         happened to be that call — a rollout at effective population
+#         size Ne far below its census size is genuinely noisier evidence
+#         (see structural_gno_evolution_bv_standalone.py's Section 14.5a
+#         and cell_population_one.py v1.2.0's exact per-step
+#         `n_effective`), so weighting it the same as a low-drift rollout
+#         silently overstated its reliability.
+#   [NEW] `GNOEvolutionBVEncoderAdapter._last_pop_confidence` (default 1.0)
+#         and `_last_pop_ne` (default None) — updated by
+#         `_population_quality_score()` from `rollout.effective_population_size`
+#         (Ne/census-N, clamped to [0.1, 1.0]) whenever it's reported.
+#   [NEW] `get_quality_score()` now weights pop_score/organelle_score by
+#         `_last_pop_confidence` in its blend (bv_score always at weight
+#         1.0, since it has nothing to do with the cell-population
+#         rollout). With no `effective_population_size` reported (older
+#         cell_population_one), confidence defaults to 1.0 and the blend
+#         reduces to exactly the old equal-weight average — a strict
+#         extension, not a behaviour change, for anyone not yet on
+#         cell_population_one v1.2.0.
+#   No call-site signature anywhere in this file changes; no new
+#         constructor arguments; no new trainable parameters.
+#
 # v3.8.0  TRIADIC COHERENCE — Tight BV ↔ Fold ↔ Mental Cross-Domain Analysis  [NEW]
 #         Primary developer of this patch: Claude (Anthropic). Gemini, GPT,
 #         and DeepSeek not involved in this revision.
@@ -3697,6 +3724,16 @@ class GNOEvolutionBVEncoderAdapter(nn.Module):
         self._last_quality: float = 0.5
         self._last_pop_quality: float = 0.5
         self._last_organelle_quality: Optional[float] = None
+        # [v3.9 NEW] Confidence weight for pop_score/organelle_score in
+        # get_quality_score()'s blend, derived from the Mode-4 rollout's
+        # effective population size (Ne) relative to its census size —
+        # see _population_quality_score's docstring for why a low-Ne
+        # rollout's signal should count for less, not the same, as a
+        # high-Ne one. Defaults to full confidence (1.0) so behaviour is
+        # unchanged for any cell_population_one version that doesn't
+        # report effective_population_size yet.
+        self._last_pop_confidence: float = 1.0
+        self._last_pop_ne: Optional[float] = None
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         B = x.shape[0]
@@ -3755,6 +3792,26 @@ class GNOEvolutionBVEncoderAdapter(nn.Module):
         already returns the organelle trace alongside the population
         trace when an `OrganelleLayer` is attached (see
         `CellPopulationTrainingBridge.rollout`).
+
+        [v3.9 NEW] Also updates `self._last_pop_confidence` from this same
+        rollout's `effective_population_size` (Ne — see
+        `CellPopulationRollout`/`estimate_effective_population_size` in
+        structural_gno_evolution_bv_standalone.py, and
+        `CellPopulation.step()`'s exact per-step `n_effective` in
+        cell_population_one.py v1.2.0+). This probe's `cellpop_n_max` is
+        small by construction (see `__init__`'s ch3d grid comment), so a
+        drift-dominated rollout (Ne << census N) is expected sometimes —
+        that's not an error, but it does mean this call's pop/organelle
+        signal is noisier and less trustworthy than a rollout closer to
+        Ne == N. `get_quality_score()` reads this confidence to down-
+        weight pop_score/organelle_score in its blend accordingly, floored
+        at 0.1 (matching `loss_population_rate_match_finite_size`'s
+        `min_relative_weight` default) so a low-Ne rollout still
+        contributes a little, never zero. Left at its previous cached
+        value (defaults to 1.0, i.e. no down-weighting) whenever
+        `effective_population_size` is unavailable — e.g. an older
+        cell_population_one build — so this is a strict extension, not a
+        behaviour change, for anyone not yet on the version that reports it.
         """
         bridge = getattr(self.bv_model, "cellpop_bridge", None)
         if bridge is None or not getattr(bridge, "available", False):
@@ -3784,6 +3841,25 @@ class GNOEvolutionBVEncoderAdapter(nn.Module):
             )
             self._last_pop_quality = min(max(0.5 * (survival + calibration), 0.0), 1.0)
 
+            # [v3.9 NEW] Ne-based confidence for this rollout — see the
+            # docstring section above for the full rationale. Ne/N is
+            # clamped to [0.1, 1.0]: 1.0 when the rollout is essentially
+            # drift-free (Ne close to census N), floored at 0.1 rather
+            # than 0.0 so a heavily drift-dominated rollout still counts
+            # for *something* in get_quality_score()'s blend, matching the
+            # same floor convention used in
+            # loss_population_rate_match_finite_size.
+            ne = getattr(rollout, "effective_population_size", None)
+            if ne is not None:
+                n_census = max(rollout.n_alive_trace[-1] if rollout.n_alive_trace else 0, 1)
+                self._last_pop_ne = float(ne)
+                self._last_pop_confidence = min(max(float(ne) / n_census, 0.1), 1.0)
+            # else: leave both at their previously cached values — older
+            # cell_population_one builds that don't report
+            # effective_population_size simply don't update this signal,
+            # exactly like organelle_health_trace's own None-means-
+            # "unavailable, not neutral" convention above.
+
             # [v3.7 NEW] POP-2 organelle reading, piggy-backed on this same
             # rollout. `organelle_health_trace` is None whenever no
             # OrganelleLayer is attached (older cell_population_one, or
@@ -3802,9 +3878,21 @@ class GNOEvolutionBVEncoderAdapter(nn.Module):
 
     def get_quality_score(self) -> float:
         """
-        [v3.2 NEW, extended v3.3, extended v3.7] BV-3 certification +
-        Mode-4 population health + POP-2 organelle health → blended
-        [0, 1] quality score (cached fallback on any sub-probe's failure).
+        [v3.2 NEW, extended v3.3, extended v3.7, extended v3.9] BV-3
+        certification + Mode-4 population health + POP-2 organelle health
+        → blended [0, 1] quality score (cached fallback on any sub-probe's
+        failure).
+
+        [v3.9 NEW] pop_score and organelle_score are now weighted by
+        `self._last_pop_confidence` (derived from the Mode-4 rollout's
+        effective population size — see `_population_quality_score`'s
+        docstring) rather than simple-averaged at equal weight with
+        bv_score regardless of how drift-dominated that rollout was.
+        bv_score's weight is always 1.0 (it has nothing to do with the
+        cell-population rollout, so Ne is irrelevant to it). With no
+        `effective_population_size` reported (older cell_population_one),
+        confidence defaults to 1.0 and this reduces to exactly the old
+        equal-weight average — a strict extension, not a behaviour change.
         """
         bv_score: Optional[float] = None
         try:
@@ -3828,10 +3916,23 @@ class GNOEvolutionBVEncoderAdapter(nn.Module):
         pop_score = self._population_quality_score()
         organelle_score = self._last_organelle_quality
 
-        scores = [s for s in (bv_score, pop_score, organelle_score) if s is not None]
-        if not scores:
+        # [v3.9 NEW] Weighted blend: bv_score always at weight 1.0;
+        # pop_score/organelle_score at weight self._last_pop_confidence
+        # (both come from the same Ne-affected rollout, so they share one
+        # confidence value). Falls back to the plain average whenever no
+        # signal is available at all, same as before.
+        weighted = [
+            (bv_score, 1.0),
+            (pop_score, self._last_pop_confidence),
+            (organelle_score, self._last_pop_confidence),
+        ]
+        weighted = [(s, w) for s, w in weighted if s is not None]
+        if not weighted:
             return self._last_quality   # neutral 0.5 unless a prior call cached something
-        return sum(scores) / len(scores)
+        total_weight = sum(w for _, w in weighted)
+        if total_weight <= 0.0:
+            return self._last_quality
+        return sum(s * w for s, w in weighted) / total_weight
 
 
 def attach_evolution_bv_to_ecosystem(
