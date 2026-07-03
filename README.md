@@ -12,13 +12,16 @@
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21103677-blue)](https://doi.org/10.5281/zenodo.21103677)
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20379088-blue)](https://doi.org/10.5281/zenodo.20379088)
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21120913-blue)](https://doi.org/10.5281/zenodo.21120913)
-[![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20623622-blue)](https://doi.org/10.5281/zenodo.20623622)
-[![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20837592-blue)](https://doi.org/10.5281/zenodo.20837592)
-[![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21064288-blue)](https://doi.org/10.5281/zenodo.21064288)
-[![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20755892-blue)](https://doi.org/10.5281/zenodo.20755892)
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20730429-blue)](https://doi.org/10.5281/zenodo.20730429)
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.17777316-blue)](https://doi.org/10.5281/zenodo.17777316)
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20824246-blue)](https://doi.org/10.5281/zenodo.20824246)
+
+[![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21159402-blue)](https://doi.org/10.5281/zenodo.21159402)
+[![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21159473-blue)](https://doi.org/10.5281/zenodo.21159473)
+[![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21120913-blue)](https://doi.org/10.5281/zenodo.21120913)
+[![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20837592-blue)](https://doi.org/10.5281/zenodo.20837592)
+[![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21131590-blue)](https://doi.org/10.5281/zenodo.21131590)
+[![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21148045-blue)](https://doi.org/10.5281/zenodo.21148045)
 
 
 A unified physics‑based framework for macromolecular refinement and mutational scanning.
