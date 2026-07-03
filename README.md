@@ -19,7 +19,6 @@
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21159402-blue)](https://doi.org/10.5281/zenodo.21159402)
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21159473-blue)](https://doi.org/10.5281/zenodo.21159473)
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21120913-blue)](https://doi.org/10.5281/zenodo.21120913)
-[![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20837592-blue)](https://doi.org/10.5281/zenodo.20837592)
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21181639-blue)](https://doi.org/10.5281/zenodo.21181639)
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21131590-blue)](https://doi.org/10.5281/zenodo.21131590)
 [![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21148045-blue)](https://doi.org/10.5281/zenodo.21148045)
