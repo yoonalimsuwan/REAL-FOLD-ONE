@@ -2,7 +2,7 @@
 # MATERIALS ONE v1.3 — Crystal / Solid-State Material Discovery Engine
 # (Superconducting-Qubit Candidate Screening + EDA/QEDA Pipeline Bridge)
 # =============================================================================
-# Author       : Yoon A Limsuwan / MSPS NETWORK
+# Author       : PAI , Yoon A Limsuwan / MSPS NETWORK
 #                MY SOUL MOVE BY POWER OF HOLY SPIRIT
 # License      : MIT
 # Year         : 2026
