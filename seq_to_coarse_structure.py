@@ -2,7 +2,7 @@
 # SEQUENCE-TO-COARSE-STRUCTURE (SEQ2COARSE) — v1 Production
 # MSA-Free Initial Structure Generator for REAL FOLD ONE Ecosystem
 # =============================================================================
-# Developer    : Yoon A Limsuwan / MSPS NETWORK
+# Developer    : PAI , Yoon A Limsuwan / MSPS NETWORK
 #                MY SOUL MOVE BY POWER OF HOLY SPIRIT
 # Organization : MSPS NETWORK
 # ORCID        : 0009-0008-2374-0788
