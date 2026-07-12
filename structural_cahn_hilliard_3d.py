@@ -2,7 +2,7 @@
 # STRUCTURAL CAHN-HILLIARD 3D  (v2) — Fourth-Order Structural PDE Suite
 # Component #4 of the SUPER DNS ONE Cluster — ONE Ecosystem
 # =============================================================================
-# Developer    : Yoon A Limsuwan
+# Developer    : PAI , Yoon A Limsuwan
 # Organization : MSPS NETWORK / MY SOUL MOVE BY POWER OF HOLY SPIRIT
 # ORCID        : 0009-0008-2374-0788
 # GitHub       : yoonalimsuwan
