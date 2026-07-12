@@ -2,7 +2,7 @@
 # RG REFINER (EXPERIMENTAL) — multiscale coarse-graining / smoothing for
 #                              folded-chain CA coordinates
 # =============================================================================
-# Author       : Yoon A Limsuwan
+# Author       : PAI , Yoon A Limsuwan
 # Organization : MSPS NETWORK
 # License      : MIT
 # Year         : 2026
