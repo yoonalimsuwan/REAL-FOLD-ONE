@@ -1,7 +1,7 @@
 # =============================================================================
 # REAL FOLD ONE – Universal Full-Atom Native Differentiable Refinement Engine
 # =============================================================================
-# Author       : Yoon A Limsuwan
+# Author       : PAI , Yoon A Limsuwan
 # Organization : MSPS NETWORK
 # License      : MIT
 # Year         : 2026
