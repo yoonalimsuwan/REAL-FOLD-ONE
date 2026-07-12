@@ -3,7 +3,7 @@
 # Domain Decomposition + Cross-Domain Contact + Recycling for 100k+ Residues
 # REAL FOLD ONE Ecosystem — closes the long-range information bottleneck
 # =============================================================================
-# Developer    : Yoon A Limsuwan / MSPS NETWORK
+# Developer    : PAI , Yoon A Limsuwan / MSPS NETWORK
 #                MY SOUL MOVE BY POWER OF HOLY SPIRIT
 # Organization : MSPS NETWORK
 # ORCID        : 0009-0008-2374-0788
