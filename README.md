@@ -536,7 +536,7 @@ gradients) for the next generation of AI‑based structure predictors.
 Citing REAL FOLD ONE
 
 ```
-Yoon A Limsuwan. "REAL FOLD ONE: SOC‑Controlled Universal Refinement Engine."
+PAI , Yoon A Limsuwan. "REAL FOLD ONE: SOC‑Controlled Universal Refinement Engine."
 Zenodo, 2026.
 https://doi.org/10.5281/zenodo.21198748
 ```
@@ -558,7 +558,7 @@ a pull request. For major features, contact the author first.
 
 Contact
 
-Yoon A Limsuwan – GitHub
+PAI , Yoon A Limsuwan – GitHub
 Project link: https://github.com/yoonalimsuwan/REAL-FOLD-ONE
 
 ```
