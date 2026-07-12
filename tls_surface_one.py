@@ -2,7 +2,7 @@
 # TLS SURFACE ONE v0.1 — Two-Level System Loss Infrastructure for
 # Superconducting Qubit Material Design
 # =============================================================================
-# Author       : Yoon A Limsuwan / MSPS NETWORK
+# Author       : PAI , Yoon A Limsuwan / MSPS NETWORK
 #                MY SOUL MOVE BY POWER OF HOLY SPIRIT
 # License      : MIT
 # Year         : 2026
