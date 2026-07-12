@@ -1,7 +1,7 @@
 # =============================================================================
 # REAL FOLD ONE HT — High‑Throughput Mutation & Epistasis Scanner
 # =============================================================================
-# Author       : Yoon A Limsuwan
+# Author       : PAI , Yoon A Limsuwan
 # Organization : MSPS NETWORK
 # License      : MIT
 # Year         : 2026
