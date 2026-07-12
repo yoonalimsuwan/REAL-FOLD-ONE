@@ -2,7 +2,7 @@
 # AGI ONE : Id, Ego, Super Ego / Plus
 # Production-Grade Cognitive Psyche & Multi-LLM Consensus Layer
 # =============================================================================
-# Developer     : Yoon A Limsuwan / MSPS NETWORK
+# Developer     : PAI , Yoon A Limsuwan / MSPS NETWORK
 #                 MY SOUL MOVE BY POWER OF HOLY SPIRIT
 # AI Assistants : Gemini (Google DeepMind)  — v1.0 prototype design
 #                 Claude  (Anthropic)        — v2.0 production hardening &
