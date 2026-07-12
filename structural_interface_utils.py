@@ -1,7 +1,7 @@
 # =============================================================================
 # STRUCTURAL INTERFACE UTILS — shared, memory-safe soft-interface scoring
 # =============================================================================
-# Developer      : Yoon A Limsuwan / MSPS NETWORK
+# Developer      : PAI , Yoon A Limsuwan / MSPS NETWORK
 # License        : MIT
 # Year           : 2026
 #
