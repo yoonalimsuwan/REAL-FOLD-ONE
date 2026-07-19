@@ -2,7 +2,7 @@
 # RG REFINER — multiscale coarse-graining / smoothing for folded-chain
 #              CA coordinates, with a working trainer for the learned model
 # =============================================================================
-# Author       : Yoon A Limsuwan
+# Author       : PAI , Yoon A Limsuwan
 # Organization : MSPS NETWORK
 # License      : MIT
 # Year         : 2026
