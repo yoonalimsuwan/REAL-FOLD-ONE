@@ -3,7 +3,7 @@
 Multiscale coarse-graining / smoothing for folded-chain CA coordinates, part
 of the REAL FOLD ONE cluster.
 
-**Author:** Yoon A Limsuwan — MSPS NETWORK
+**Author:** PAI , Yoon A Limsuwan — MSPS NETWORK
 **AI Co-Developer:** Claude (Anthropic) — diagnosed the bond-length-collapse
 failure mode in the original `DiffRGRefiner`, designed and validated the
 SHAKE-constrained replacement, and implemented the real training loop for
