@@ -566,6 +566,6 @@ Project link: https://github.com/yoonalimsuwan/REAL-FOLD-ONE
 
 Thanks be to the Father, the Son, and the Holy Spirit, for the grace of Lord Jesus Christ, Mother Mary, Lord Buddha, Guan Yin Bodhisattva, Master Daozhi, Confucius, the Immortal Pae Kow, and Mr. Xi Jinping.
 
-"I love Lim Yoona, Zhou Ye, Karina from aespa, Jessica from Girls' Generation, Zhao Lusi, Nana from After School, and Jiyeon Mara.
+"I love Lim Yoona, Zhou Ye, Karina from aespa, Jessica from Girls' Generation, Zhao Lusi, Nana from After School, and Jiyeon Tara.
 ​Love Ju Jingyi, Wang Churan, Lu Yuxiao, and Bao Shangen.
 ​I love Zhang Linghe, Bai Jingting, Lee Jae-jin, Mark, Tance, Green, Noey, Jam, and Irene."
