@@ -16,7 +16,7 @@ sequence (str)
 SeqToCoarseStructure        (seq_to_coarse_structure.py)
     │  init_coords, seq_features, sigma
     ▼
-StructuralGNOFold            (structural_gno_fold_v3.py — external)
+StructuralGNOFold            (structural_gno_fold_v4.py — external)
     │  final_coords, pred_ddg
     ▼
 Cα-only PDB
@@ -228,7 +228,7 @@ If you change either file, re-run both suites before trusting new output — mos
 | `torch` (≥ 2.0 recommended) | Everything. PyTorch ≥ 2.0 lets `F.scaled_dot_product_attention` dispatch to FlashAttention automatically where supported. | `pip install torch` |
 | `fair-esm` or `transformers` | `embed_backend="esm2"` (optional — falls back to `"learned"` if neither is installed). | `pip install fair-esm` or `pip install transformers` |
 | `biopython` | Nicer 1-letter→3-letter residue-name mapping in `write_ca_pdb` (optional — has a built-in fallback table). | `pip install biopython` |
-| `structural_gno_fold_v3.py` | Tier 1's refinement stage (`StructuralGNOFold`). Required by `run_msa_free_pipeline.py`; not bundled here. | *(ecosystem file)* |
+| `structural_gno_fold_v4.py` | Tier 1's refinement stage (`StructuralGNOFold`). Required by `run_msa_free_pipeline.py`; not bundled here. | *(ecosystem file)* |
 | `openmm` + `real_fold_one_v2.py` | Tier 2 (`RefinementEngine`). | `pip install openmm` |
 | `pdbfixer` | Tier 2 side-chain reconstruction. | `pip install pdbfixer` |
 
