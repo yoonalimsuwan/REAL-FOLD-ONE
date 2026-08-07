@@ -54,7 +54,7 @@ Pure PyTorch. No external dependency beyond the ecosystem's own files.
 sequence → SeqToCoarseStructure → StructuralGNOFold → Cα coordinates (+ pred_ddg)
 ```
 
-This is a complete, fully differentiable, MSA-free prediction on its own. If `structural_gno_fold_v3.py` is unavailable, `seq_to_coarse_structure.py` can still be used standalone — its own output (`init_coords`, `seq_features`, `sigma`) is exactly the triple `StructuralGNOFold.forward` expects, so it's a drop-in first stage for any compatible refinement module.
+This is a complete, fully differentiable, MSA-free prediction on its own. If `structural_gno_fold_v4.py` is unavailable, `seq_to_coarse_structure.py` can still be used standalone — its own output (`init_coords`, `seq_features`, `sigma`) is exactly the triple `StructuralGNOFold.forward` expects, so it's a drop-in first stage for any compatible refinement module.
 
 ### Tier 2 — physics-based all-atom refinement (optional, best-effort)
 
