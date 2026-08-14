@@ -2,6 +2,12 @@
 Organ PDB Exporter
 Language: Python 3.10+ / PyTorch (Fully Differentiable CUDA-accelerated)
 ===============================================================================
+# Developer    : PAI , Yoon A Limsuwan / MSPS NETWORK
+# License      : MIT
+# Year         : 2026
+# ORCID        : 0009-0008-2374-0788
+# GitHub       : yoonalimsuwan
+===============================================================================
 """
 
 import numpy as np
