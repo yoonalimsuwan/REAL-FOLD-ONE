@@ -534,6 +534,37 @@ gradients) for the next generation of AI‑based structure predictors.
 
 ---
 
+# Molecular Structural Analysis Suite (MSAS)
+
+A next-generation, fully differentiable computational suite for macromolecular structure refinement and energy estimation, leveraging PyTorch-based autograd engines for high-performance X-ray Crystallography and Cryo-EM map fitting.
+
+## Overview
+
+The **Molecular Structural Analysis Suite (MSAS)** bridges the gap between classical structural biology techniques (similar to PHENIX) and modern deep learning-based force field simulations. By utilizing native PyTorch differentiability, MSAS provides a high-performance framework for macromolecular modeling.
+
+### Core Modules
+
+1.  **RealFoldOneAdvancedEngine**:
+    *   Optimizes macromolecular structures using a fully differentiable physics-informed engine.
+    *   Handles heterogeneous atoms, alternate conformations, and occupancy optimization via custom target functions.
+    *   Implements **No-Zeno Topological Transition Gates** to prevent convergence stagnation.
+
+2.  **XrayCryoEMNativeEngine**:
+    *   Native support for both X-ray Crystallography ($F_{obs}$ vs $F_{calc}$) and Cryo-EM map fitting (real-space squared error / FSC maximization).
+    *   Integrates seamless objective functions that allow for hybrid refinement protocols.
+
+3.  **OpenMMEnergyCalculator**:
+    *   A high-performance wrapper for OpenMM, integrating AMBER ff14SB with advanced Neural Network Potentials (ANI-2x/MACE).
+    *   Facilitates energy landscapes mapping through PyTorch `autograd` flow.
+
+## Key Features
+
+*   **Native Differentiability**: Unlike legacy crystallographic software, our pipelines are end-to-end differentiable, allowing for direct gradient-based optimization on GPU clusters.
+*   **Physics-AI Hybrid**: Combines classical structural biology principles with state-of-the-art Neural Network Potentials for superior precision in protein folding and ligand binding studies.
+*   **No-Zeno Convergence**: Advanced mathematical frameworks (No-Zeno) ensure structural stability and reliable convergence in highly complex search spaces.
+*   **Interoperability**: Designed for seamless data transition from standard file formats (.pdb, .mtz, .map) to differentiable tensors.
+
+
 # REAL FOLD ONE: Advanced Multi-Physics & Structural Calculus Framework
 
 
