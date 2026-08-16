@@ -1,3 +1,13 @@
+ =============================================================================
+# NoZeno Diff Engine (No-Zeno Differentiable Structural Engine)
+# =============================================================================
+# Author       : PAI , Yoon A Limsuwan / MSPS NETWORK
+#                MY SOUL MOVE BY POWER OF HOLY SPIRIT
+# License      : MIT
+# Year         : 2026
+# ORCID        : 0009-0008-2374-0788
+# GitHub       : https://github.com/yoonalimsuwan
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
