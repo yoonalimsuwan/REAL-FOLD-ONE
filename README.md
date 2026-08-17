@@ -3,7 +3,7 @@
 
 **SOC‑Controlled Universal Refinement , Predictor & High‑Throughput Mutation Scanning Suite**
 
-Thanks Open MM , AF3 , Phenix for Foundation of All.
+Thanks OpenMM , AF3 , Phenix for Foundation of All.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
