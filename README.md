@@ -660,12 +660,12 @@ Developed by MSPS NETWORK (PAI AND Yoon A Limsuwan) to revolutionize computation
  * Deterministic Inference: Moves beyond probabilistic sampling to precise topological structural prediction.
    
 📦 Module Breakdown
-1. denovo_protein_calculus_agent.py
+1. denovo_protein_calculus_agent_optimized_native_full_differentiable.py
 Purpose: End-to-End De Novo Protein Design
  * Core Logic: Integrates amino acid sequence embedding with the Structural Calculus Core.
  * Key Feature: Contains the DeNovoProteinCalculusAgent which maps discrete sequences to a continuous structural state space.
  * Use Case: Generating stable protein topologies from raw sequence inputs.
-2. structural_calculus_agent.py
+2. structural_calculus_agent_optimized_native_full_differentiable.py
 Purpose: General Structural Inference Engine
  * Core Logic: Implements the FullStructuralCalculusAgent for handling experimental data (e.g., LC-MS, NMR raw signals).
  * Key Feature: Features the TopologicalBranchEliminator, which evaluates structural viability via determinant evaluation (O(N^3)) instead of brute-force enumeration.
