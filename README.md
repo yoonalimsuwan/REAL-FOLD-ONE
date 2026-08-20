@@ -649,6 +649,53 @@ This repository houses a high-performance computational framework engineered to 
 **Note:** This framework is intended for academic research, high-performance computational studies, and peer-reviewed scientific development. 
 
 
+## Deterministic Structural Calculus Framework (2026)
+A Deterministic Topological Framework for De Novo Protein Design and Structural Analysis.
+Developed by MSPS NETWORK (Yoon A Limsuwan) to revolutionize computational biology by replacing stochastic search with deterministic topological inference. This framework leverages high-level tensor calculus and topological gating to resolve complex protein folding pathways in polynomial time, bypassing the exponential computational bottlenecks found in traditional methods.
+
+🚀 Key Innovations
+ * Polynomial Boundedness: Collapses exponential decision spaces into quotient spaces using the Universal Contraction Operator.
+ * No-Zeno Topological Gating: Resolves infinite topological loop traps using Gumbel-type extreme-value statistics.
+ * O(N) Complexity: Highly vectorized operations for RMSD calculation and restraint penalties, ensuring production-grade performance.
+ * Deterministic Inference: Moves beyond probabilistic sampling to precise topological structural prediction.
+   
+📦 Module Breakdown
+1. denovo_protein_calculus_agent_2.py
+Purpose: End-to-End De Novo Protein Design
+ * Core Logic: Integrates amino acid sequence embedding with the Structural Calculus Core.
+ * Key Feature: Contains the DeNovoProteinCalculusAgent which maps discrete sequences to a continuous structural state space.
+ * Use Case: Generating stable protein topologies from raw sequence inputs.
+2. structural_calculus_agent_2.py
+Purpose: General Structural Inference Engine
+ * Core Logic: Implements the FullStructuralCalculusAgent for handling experimental data (e.g., LC-MS, NMR raw signals).
+ * Key Feature: Features the TopologicalBranchEliminator, which evaluates structural viability via determinant evaluation (O(N^3)) instead of brute-force enumeration.
+ * Use Case: Analyzing existing structural data or refining topological models.
+3. nmr_restraint_set_optimized_rmsd_loss_3.py
+Purpose: High-Performance Experimental Constraints & Loss
+ * Core Logic: Handles NMR restraints (NOE/Dihedral) and provides an ultra-fast Kabsch RMSD calculator.
+ * Key Feature: Fully vectorized operations; optimized for batch-free production pipelines.
+ * Use Case: Enforcing structural convergence via harmonic pulling and experimental validation.
+🛠 Prerequisites
+The framework is built on PyTorch. Ensure you have the following installed:
+pip install torch numpy
+
+📝 Usage Example
+Each module is designed to be self-contained for easy integration into your pipeline. Example initialization:
+from structural_calculus_agent_2 import FullStructuralCalculusAgent
+
+# Initialize the inference engine
+agent = FullStructuralCalculusAgent(
+    input_dim=128, 
+    n_vars=64, 
+    m_clauses=128, 
+    num_classes=1
+)
+
+# Run structural inference
+prediction, viability, transition = agent(raw_data_tensor)
+
+
+
 Citing REAL FOLD ONE
 
 ```
