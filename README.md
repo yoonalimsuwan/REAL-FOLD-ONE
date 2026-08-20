@@ -695,6 +695,51 @@ agent = FullStructuralCalculusAgent(
 # Run structural inference
 prediction, viability, transition = agent(raw_data_tensor)
 
+# Denovo Sequence Designer (`DifferentiableStructuralDesigner`)
+
+**Developer:** PAI, Yoon A Limsuwan / MSPS NETWORK  
+**License:** MIT
+**Year:** 2026
+
+## 🧬 Overview
+The `DifferentiableStructuralDesigner` is a PyTorch-based neural network module engineered specifically for generating *de novo* sequences. It is built upon a highly optimized Structural Calculus framework, which is strictly designed to maintain polynomial time complexity while supporting full backpropagation
+
+## ⚙️ Core Architecture & Principles
+The forward pass of this module executes five fundamental Structural Calculus principles
+
+*   **Gumbel Sequence Generation (No-Zeno Condition):** Utilizes Gumbel-Softmax with `hard=True` to enable a discrete forward pass (memory efficient) while keeping the backward pass continuous.
+*   **Universal Contraction Operator ($\Phi_U$):** Employs a bias-free linear projection to collapse micro-states deterministically into a finite tensor network.
+*   **Deterministic Branch Elimination:** Projects data to a topological signature matrix and calculates an overdetermined contraction bound using a regularized log-determinant. This yields a continuous viability score from 0.0 to 1.0, where scores closer to 1.0 indicate a structurally sound topology
+*   **Topological Active Operators:** Introduces disordered media by injecting quenched spatial noise directly into the continuous sequence space. The mutation probability serves as a barrier crossing and scales inversely with the viability score
+*   **Stochastic Homogenization:** Applies Softmax to converge chaotic micro-states into a smooth, macroscopic relativistic limit
+## 📊 Module Outputs
+When executed, the forward pass returns a dictionary containing
+*   `macroscopic_sequence`: The differentiable continuous tensor output
+*   `hard_tokens`: Discrete sequence tokens (argmax) meant for downstream evaluation
+*   `viability_score`: A normalized scalar indicating structural stability, which is directly used for loss calculation
+## 🚀 Quick Start & Usage
+The module is production-ready and can be optimized further using `torch.compile()` for maximum throughput
+
+```python
+import torch
+from your_module import DifferentiableStructuralDesigner
+
+# Initialize module and optimizer
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+designer = DifferentiableStructuralDesigner(seq_length=200).to(device)
+optimizer = torch.optim.AdamW(designer.parameters(), lr=1e-3)
+
+# Forward pass
+optimizer.zero_grad()
+output = designer(batch_size=32)
+
+# Maximize structural viability (minimize negative viability)
+loss = -output["viability_score"].mean()
+loss.backward()
+optimizer.step()
+
+print(f"Batch Loss: {loss.item():.4f}")
+print(f"Sample Tokens: {output['hard_tokens'][0][:20]}...")
 
 
 Citing REAL FOLD ONE
