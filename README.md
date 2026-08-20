@@ -741,6 +741,7 @@ optimizer.step()
 print(f"Batch Loss: {loss.item():.4f}")
 print(f"Sample Tokens: {output['hard_tokens'][0][:20]}...")
 
+````
 ##REAL FOLD ONE : De Novo Protein Design and Predictor 
 An End-to-End Deterministic Structural Calculus Ecosystem for Large-Scale Protein Folding
 
