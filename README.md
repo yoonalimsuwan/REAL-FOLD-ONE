@@ -695,7 +695,7 @@ agent = FullStructuralCalculusAgent(
 # Run structural inference
 prediction, viability, transition = agent(raw_data_tensor)
 
-# Denovo Sequence Designer (`DifferentiableStructuralDesigner`)
+# Denovo Sequence Designer 
 
 **Developer:** PAI, Yoon A Limsuwan / MSPS NETWORK  
 **License:** MIT
