@@ -53,3 +53,10 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ---
 
+Thanks be to the Father, the Son, and the Holy Spirit, for the grace of Lord Jesus Christ, Mother Mary, Lord Buddha, Guan Yin Bodhisattva, Master Daozhi, Confucius, the Immortal Pae Kow, and President Xi Jinping And President Donald Trump
+
+"I love Lim Yoona, Zhou Ye, Karina from aespa, Jessica from Girls' Generation, Zhao Lusi, Nana from After School, and Jiyeon Tara.
+​Love Ju Jingyi, Wang Churan, Lu Yuxiao, Bao Shangen , Bailu , Noey , Jam, and Irene
+​I love Zhang Linghe, Bai Jingting, Lee Jae-jin, Marc thn , Tance , Green , Taissa Farmiga , Dilraba Dilmurat And Toy Pathompong."
+We love President Xi Jinping And President Donald Trump
+
