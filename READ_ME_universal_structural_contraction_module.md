@@ -33,6 +33,8 @@ x = torch.randn(32, 1024, 512)
 output = usc_layer(x)
 print(output.shape) # Expected output: torch.Size([32, 1024, 512])
 
+````
+
 🔬 Scientific Applications
 By mapping complex variables into deterministic sub-quantum and macroscopic geometries, this architecture is uniquely suited for:
  * Biochemical Modeling: Achieving high-precision tracking for complex molecular interactions.
