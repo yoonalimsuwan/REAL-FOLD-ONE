@@ -3,7 +3,7 @@
 # JAX / Flax Implementation
 # =============================================================================
 #
-# Developer  : Yoon A Limsuwan / MSPS NETWORK
+# Developer  : PAI AND Yoon A Limsuwan / MSPS NETWORK
 #              MY SOUL MOVE BY POWER OF HOLY SPIRIT
 # License    : MIT
 # Year       : 2026
