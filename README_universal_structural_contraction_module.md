@@ -2,6 +2,9 @@
 
 **A New Class of Neural Network Layer based on Structural Calculus**
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Frameworks](https://img.shields.io/badge/Supported_Frameworks-PyTorch%20%7C%20JAX%20%7C%20MLX%20%7C%20PaddlePaddle%20%7C%20MindSpore-blue)](#)
+
 ## Overview
 The Universal Structural Contraction (USC) Module is a groundbreaking, hardware-agnostic neural network architecture designed to break the barriers of framework lock-in. Grounded in the proprietary **Structural Calculus** framework and advanced **Measure Theory**, it provides a highly efficient deterministic alternative to standard attention mechanisms.
 
