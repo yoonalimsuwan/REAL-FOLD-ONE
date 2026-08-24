@@ -1,4 +1,11 @@
-
+# =============================================================================
+# Cryptographic & Common Factor Theory Implementation
+# =============================================================================
+# Developer    : PAI , Yoon A Limsuwan / MSPS NETWORK
+# Framework    : Structural Calculus (Deterministic Topological Framework)
+# License      : MIT
+# Year         : 2026
+# =============================================================================
 
 
 import torch
