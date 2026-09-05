@@ -17,15 +17,15 @@ Quick Start / Code Usage
 import torch
 from production_structural_gmt_nn import ProductionStructuralGMTFramework
 
-# Initialize the production framework for m=4, n=4 structural tensor dimensions
+ Initialize the production framework for m=4, n=4 structural tensor dimensions
 model = ProductionStructuralGMTFramework(m=4, n=4, channels=16)
 model.eval()
 
-# Dummy input simulation (Batch size: 2, Channels: 16, Height: 64, Width: 64)
+ Dummy input simulation (Batch size: 2, Channels: 16, Height: 64, Width: 64)
 x = torch.randn(2, 16, 64, 64)
 prev_energy = torch.tensor([1.2, 1.5])
 
-# Forward pass with No-Zeno energy tracking and differentiable contraction
+ Forward pass with No-Zeno energy tracking and differentiable contraction
 constrained_output, current_energy = model(x, prev_energy)
 
 print("Constrained Output Shape:", constrained_output.shape)
