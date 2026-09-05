@@ -36,11 +36,11 @@ from super_dns_infinite_crispr_evolution_module import InfiniteCRISPREvolutionEn
 device = "cuda"
 
 # 1. Initialize the Highly-Optimized Engine
-# seq_length = 1368 (Standard SpCas9 size), vocab_size = 25 (Amino Acids)
+ seq_length = 1368 (Standard SpCas9 size), vocab_size = 25 (Amino Acids)
 engine = InfiniteCRISPREvolutionEngine(seq_length=1368, vocab_size=25).to(device)
 
-# Optional: Enable PyTorch 2.x kernel fusion for +30% throughput
-# engine = torch.compile(engine)
+ Optional: Enable PyTorch 2.x kernel fusion for +30% throughput
+ engine = torch.compile(engine)
 
 optimizer = torch.optim.AdamW(engine.parameters(), lr=1e-3)
 scaler = torch.cuda.amp.GradScaler()
