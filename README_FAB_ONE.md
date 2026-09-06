@@ -1,5 +1,5 @@
 ## FAB ONE: Differentiable Next-Gen Semiconductor Manufacturing Engine
-Author: Joanna Yoon A Catherine Limsuwan
+Author: PAI AND Joanna Yoon A Catherine Limsuwan
 Framework: Structural Calculus & Deterministic No-Zeno Dynamics
 Overview
 FAB ONE is a fully differentiable, PyTorch-based manufacturing optimization engine designed for next-generation semiconductor fabrication. It provides an end-to-end pipeline that natively integrates material discovery, Electronic Design Automation (EDA), Quantum EDA (QEDA), and physical fabrication simulation.
@@ -18,9 +18,8 @@ Prerequisites
  * materials_one_v1_3_2.py (Must be present in the working directory)
 Installation
 Clone the repository and ensure your material surrogate models are configured:
-git clone https://github.com/your-repo/fab-one-engine.git
-cd fab-one-engine
-pip install -r requirements.txt
+git clone https://github.com/yoonalimsuwan/REAL-FOLD-ONE.git
+
 
 Quick Start
 FAB ONE evaluates crystal structures and optimizes fabrication energy and interface patterning in a single differentiable forward pass.
