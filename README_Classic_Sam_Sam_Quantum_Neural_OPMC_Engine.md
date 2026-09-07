@@ -1,4 +1,3 @@
-```
 ## Classic-Sam-Sam Quantum-Neural OPMC Engine
 A native, fully differentiable, high-performance quantum-neural framework implementing the One-Processing-Many-Computation (OPMC) paradigm. Developed with continuous weak measurement theory to eliminate wavefunction collapse (\delta_{\text{collapse}} = 0), this engine executes multi-objective neural evaluations in a single unified operator pass, drastically reducing computational overhead.
 Authorship & Theoretical Attribution
@@ -14,15 +13,8 @@ Core Features
    * Task 1 (Primary Objective / Classification): Pointer spatial shift \delta q_{\text{app}} = \chi_0 \cdot \text{Re}(A_W^{\text{neural}}).
    * Task 2 (Regularization / Phase Stability): Pointer momentum shift \delta p_{\text{app}} = \left(\frac{2 \chi_0 \sigma_p^2}{\hbar}\right) \cdot \text{Im}(A_W^{\text{neural}}).
  * Deterministic No-Zeno Bounds: Enforces non-explosive thermodynamic stability guarantees (\mathbb{P}(N(T) < \infty) = 1) via bounded energy gaps.
-Paradigm Comparison
-| Architectural Feature | Standard Deep Learning | OPMC Quantum-Neural Paradigm |
-|---|---|---|
-| Measurement Paradigm | Discontinuous State Projection / Collapse | Unfinished Weak Measurement State (\delta_{\text{collapse}} = 0) |
-| Execution Complexity | Sequential Task Pass O(K \cdot N^2) | Single Pass Unified Evaluation O(d(m,n)) |
-| State Space Space | Disjoint Feature Spaces | Compact Mapped Tensor Algebra V_{\text{str}} |
-| Observable Extraction | Single Scalar Measurement | Dual Position (\delta q_{\text{app}}) & Momentum (\delta p_{\text{app}}) Shifts |
-| Stability Control | Vulnerable to Explosion / Drift | Deterministic No-Zeno Energy Barrier Bounds |
-Installation & Hardware Backends
+   
+waretallation & Hardware Backends
 Install the dependencies for your preferred hardware target:
 # For NVIDIA GPUs / PyTorch Target
 pip install torch
