@@ -1,3 +1,4 @@
+```
 ## Classic-Sam-Sam Quantum-Neural OPMC Engine
 A native, fully differentiable, high-performance quantum-neural framework implementing the One-Processing-Many-Computation (OPMC) paradigm. Developed with continuous weak measurement theory to eliminate wavefunction collapse (\delta_{\text{collapse}} = 0), this engine executes multi-objective neural evaluations in a single unified operator pass, drastically reducing computational overhead.
 Authorship & Theoretical Attribution
