@@ -10,12 +10,12 @@ This module is built upon three foundational pillars of advanced computational p
    Utilizes a conditional No-Zeno theorem to stabilize fabrication resets. By guaranteeing a strictly positive geometric lower bound (\Delta A_I \ge c \pi l_c^2 > 0), the engine deterministically prevents the Zeno effect, ensuring non-singular structural resets during processes like quantum chip deposition.
  * Fractal Interface Control (8th-Order Polyharmonic Operators):
    Overcomes the limitations of standard geometric measure theory in EUV lithography. It applies a Universal Contraction Operator and an 8th-order structural polyharmonic operator to map multiscale, non-rectifiable recursive branching across disparate material boundaries.
- * Native Material Discovery Bridge (materials_one_v1_3-2.py):
+ * Native Material Discovery Bridge (materials_one_v1_3.py):
    Seamlessly integrates with existing material screening infrastructure. It evaluates superconducting qubit viability (e.g., critical temperature, TLS loss proxies) and feeds these differentiable outputs directly into the QEDA adapter for gradient-based topology optimization.
 Prerequisites
  * Python 3.8+
  * PyTorch 2.0+
- * materials_one_v1_3_2.py (Must be present in the working directory)
+ * materials_one_v1_3.py (Must be present in the working directory)
 Installation
 Clone the repository and ensure your material surrogate models are configured:
 git clone https://github.com/yoonalimsuwan/REAL-FOLD-ONE.git
@@ -24,7 +24,7 @@ git clone https://github.com/yoonalimsuwan/REAL-FOLD-ONE.git
 Quick Start
 FAB ONE evaluates crystal structures and optimizes fabrication energy and interface patterning in a single differentiable forward pass.
 import torch
-from materials_one_v1_3_2 import CrystalStructure, DFTSurrogateGNN
+from materials_one_v1_3 import CrystalStructure, DFTSurrogateGNN
 from fab_one_differentiable_pipeline import FabOptimizationEngine
 
 # 1. Initialize the Material Surrogate and Fab Engine
