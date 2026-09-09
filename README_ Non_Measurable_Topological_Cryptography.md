@@ -8,12 +8,17 @@ Key Features
  * Measure-Theoretic Defense: Maps ciphertexts onto non-measurable Vitali sets, making structural weak value integrals strictly undefined.
  * Zeno-Avalanche Traps: Automatically detects continuous probing (probe_count >> 1), driving the minimum energy gap \Delta E_{\text{min}} \to 0 and breaking the weak interaction constraint (\chi_0 \gg 1).
  * Sub-Quantum Decryption: Utilizes Semantic-State Contraction (SSC) critical fixed points (e_{\text{FP}} = 1.64 \times 10^{-4}) for secure, integration-free ordinal descent.
+ * 
 Architecture & Mathematical Blueprint
+
 | Architectural Component | Mechanism | Adversarial Defense / Output |
-|---|---|---|
+
 | Encryption Layer | Vitali-Substrate Quotient Mapping | Destroys invariant measure integration (d\mu_{\text{str}}) |
+
 | Trap Activation | Vanishing Energy Gap (\Delta E_{\text{min}} \propto k^{-2}) | Triggers Zeno explosion and wavefunction collapse (\delta_{\text{collapse}} = 1) |
+
 | Decryption Layer | Zero-Hamiltonian Ordinal Descent | Bypasses time integration (\int_0^T g(t)dt = 0) using fixed point e_{\text{FP}} |
+
 Quick Start & Usage Examples
 1. PyTorch Native Implementation
 import torch
