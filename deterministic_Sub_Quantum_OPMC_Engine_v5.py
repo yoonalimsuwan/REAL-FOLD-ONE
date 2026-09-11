@@ -1,5 +1,5 @@
 # =============================================================================
-# Deterministic Sub-Quantum OPMC Engine - Production Grade v4.0 (Revised)
+# Deterministic Sub-Quantum OPMC Engine - Production Grade v5.0 (Revised)
 # Native Full Differentiability | Bounded Iteration Complexity (Independent of N)
 # =============================================================================
 # Theoretical Foundation : Sub-Quantum Ordinal Descent Calculus & Unified Theory
