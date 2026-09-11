@@ -17,15 +17,7 @@ The engine transitions from heuristic assertions to rigorous mathematical theore
    * Guarantees a unique fixed point X^* via the Banach Fixed-Point Theorem.
  * Bounded Iteration Complexity (Theorem 9.1 & Remark 9.2)
    * Proves that target precision \epsilon is reached within k^* = \lceil \ln(\epsilon/D_0) / \ln L \rceil fixed-point iterations on the fixed state space \mathcal{M}_{\text{str}} \subset \mathbb{R}^{d(m,n)}.
-📊 Constant Justification Comparison
-| Parameter | Unrevised Draft | Revised Edition | Mathematical Source / Justification |
-|---|---|---|---|
-| C_1 (Linear Bound) | 0.420000 | 0.420000 | 3 \times \kappa_{\text{sob}} = 3 / \sqrt{51.0204} (Theorem 4.5 & Proposition 4.2) |
-| K_1 (Linear Lipschitz) | 6400.0 | 6400.0 | Free Design Parameter (Standing Hypothesis 6.5) |
-| K_2 (Gradient Bound) | 12.500000 | 2\sqrt{3} \approx 3.464102 | Discrete Bernstein Inequality for d=3, W=1 (Corollary 6.3) |
-| \epsilon_{\text{coupling}} | N/A (Implicit) | 1.0 \times 10^{-4} | Free Design Parameter (Standing Hypothesis 6.5) |
-| \beta (Nonlinear Coupling) | 0.01371104 | 0.01371104 | Free Design Parameter (Standing Hypothesis 6.5) |
-| L (Contraction Factor) | 0.440188 | \mathbf{0.316309} | Proved bound: L \le \epsilon_{\text{coupling}} C_1 K_1 + \beta K_2 (Example 6.7) |
+
 🛠️ Installation & Dependencies
 The module requires Python 3.9+ and at least one of the following deep learning frameworks:
 PyTorch Setup
