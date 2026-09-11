@@ -1,53 +1,106 @@
-## Sub-Quantum OPMC Engine: Full Multi-Backend Production v3.0
-Overview
-The Sub-Quantum OPMC Engine v3.0 is a next-generation, high-performance neural network module designed for cross-platform production environments. Shifting away from legacy probabilistic and random models, this framework provides strictly deterministic solutions to complex computational challenges.
-This engine implements the proprietary Sub-Quantum Ordinal Descent Calculus and the Unified Ordinal-Tensor Measurement Theory, bypassing continuous integration over non-measurable sets (Vitali sets) through pure measure-theoretic support nullification. The resulting architecture guarantees extreme computational efficiency and absolute mathematical rigor.
-Theoretical Foundation & Authorship
-This module is built upon the foundational mathematical frameworks and interdisciplinary master manuscripts developed by Mr. PAI and Joanna Yoon A Catherine Limsuwan. It mathematically translates the continuous quantum superposition into a deterministic, finished measurement process via a Universal Contraction Mapping.
-Key Mathematical Upgrades
-This v3.0 production module integrates the following fully rigorous derivations:
- * Deterministic Banach Contraction: The network enforces a strict global Lipschitz contraction constant of L = 0.440188 < 1. This guarantees that the system state converges deterministically to a unique fixed point without the need for arbitrary iterative tuning loops.
- * Exact Operator Bounds: Continuous gradient bounds are mapped to the discrete physical lattice utilizing the exact biharmonic spectral operator bound coefficient C_1 = 0.420 and the sharp discrete gradient supremum K_2 = 12.500.
- * O(1) Hardware-Decoupled Complexity: By deploying a Conditional Fixed-Hardware Physical execution model, the physical operational complexity is strictly bounded at e_{phys}(A_W^{str}) = O(1) relative to the input scale N.
- * Sub-Quantum Semantic-State Contraction (U_{SSC}): The network applies deterministic damping parameters (a_1 = 3 \times 10^{-4}, a_2 = 1.0 \times 10^{-3}, a_3 = 3.5 \times 10^{-2}) to ensure stable projection without wavefunction collapse.
-Supported Backends
-The module is designed with a Universal Master Dispatcher, providing native, fully differentiable support for:
- * PyTorch (Hyper-Tensor Lift and Contraction)
- * JAX / Flax (High-Performance Compiled Engine)
-Installation & Quick Start
-Ensure you have either torch or jax and flax installed in your environment.
-# Import the master dispatcher
-from opmc_engine import build_deterministic_quantum_neural_module
+## Deterministic Sub-Quantum OPMC Engine v4.0 (Revised Edition)
+A fully differentiable, dual-backend (PyTorch & JAX/Flax) engine implementing Sub-Quantum Ordinal Descent Calculus and Structural Geometric Measure Theory (GMT).
+This version incorporates the rigorous mathematical proofs, justified constants, and corrected parameter derivations established in the Revised Edition (September 2026).
+🌟 Key Theoretical Highlights & Mathematical Rigor
+The engine transitions from heuristic assertions to rigorous mathematical theorems derived in the Revised Edition:
+ * Measure-Zero Temporal Support Nullification (Lemma 2.1 & Remark 2.2)
+   * Localizes interaction support to a discrete projection epoch t^* \in [0, T], where Lebesgue measure \lambda(\{t^*\}) = 0.
+   * Eliminates weak-value integral divergence by avoiding integration over non-measurable quotient spaces (Vitali sets) within the reformulated model dynamics.
+ * Domain-Normalized Biharmonic Sobolev Constant (C_1 = 0.420000)
+   * Proves the scaling law \lambda_1(c\Omega) = c^{-4}\lambda_1(\Omega) for clamped biharmonic operators (Lemma 4.1).
+   * Establishes domain normalization \Omega^* yielding fundamental eigenvalue \Lambda = 51.0204 (Proposition 4.2), giving sharp Sobolev embedding constant \kappa_{\text{sob}} = 0.140000 (Lemma 4.4) and linear operator bound C_1 \le 3\kappa_{\text{sob}} = 0.420000 (Theorem 4.5).
+ * Discrete Bernstein Inequality (K_2 = 2\sqrt{3} \approx 3.464102)
+   * Replaces underived heuristic constants with a derived gradient supremum bound K_2 = 2\sqrt{d}W = 2\sqrt{3} \approx 3.464102 for bandwidth W=1 in d=3 spatial dimensions (Theorem 6.2 & Corollary 6.3).
+ * Quantified Banach Contraction (L \approx 0.316309 < 1)
+   * Evaluates the operational mapping T_{\text{str}}(X) = U_{\text{SSC}}(X) + \beta V_{\text{nonlin}}(X) under explicitly identified free design parameters (\epsilon_{\text{coupling}} = 10^{-4}, K_1 = 6400, \beta = 0.01371104):
+     
+   * Guarantees a unique fixed point X^* via the Banach Fixed-Point Theorem.
+ * Bounded Iteration Complexity (Theorem 9.1 & Remark 9.2)
+   * Proves that target precision \epsilon is reached within k^* = \lceil \ln(\epsilon/D_0) / \ln L \rceil fixed-point iterations on the fixed state space \mathcal{M}_{\text{str}} \subset \mathbb{R}^{d(m,n)}.
+📊 Constant Justification Comparison
+| Parameter | Unrevised Draft | Revised Edition | Mathematical Source / Justification |
+|---|---|---|---|
+| C_1 (Linear Bound) | 0.420000 | 0.420000 | 3 \times \kappa_{\text{sob}} = 3 / \sqrt{51.0204} (Theorem 4.5 & Proposition 4.2) |
+| K_1 (Linear Lipschitz) | 6400.0 | 6400.0 | Free Design Parameter (Standing Hypothesis 6.5) |
+| K_2 (Gradient Bound) | 12.500000 | 2\sqrt{3} \approx 3.464102 | Discrete Bernstein Inequality for d=3, W=1 (Corollary 6.3) |
+| \epsilon_{\text{coupling}} | N/A (Implicit) | 1.0 \times 10^{-4} | Free Design Parameter (Standing Hypothesis 6.5) |
+| \beta (Nonlinear Coupling) | 0.01371104 | 0.01371104 | Free Design Parameter (Standing Hypothesis 6.5) |
+| L (Contraction Factor) | 0.440188 | \mathbf{0.316309} | Proved bound: L \le \epsilon_{\text{coupling}} C_1 K_1 + \beta K_2 (Example 6.7) |
+🛠️ Installation & Dependencies
+The module requires Python 3.9+ and at least one of the following deep learning frameworks:
+PyTorch Setup
+pip install torch
 
-# Initialize for PyTorch backend
-pytorch_model = build_deterministic_quantum_neural_module(
+JAX / Flax Setup
+pip install jax jaxlib flax
+
+🚀 Quickstart Usage
+1. Unified Master Factory Interface
+import torch
+from deterministic_Sub_Quantum_OPMC_Engine_v4 import build_deterministic_quantum_neural_module
+
+# Instantiate PyTorch Module via Master Factory
+engine_pt = build_deterministic_quantum_neural_module(
     backend_name="pytorch", 
     dim=4, 
     num_modes=8, 
     rank_n=5
 )
 
-# Initialize for JAX backend
-jax_model = build_deterministic_quantum_neural_module(
+# Dummy state input (Batch=2, Dim=4)
+x = torch.randn(2, 4)
+dt = 0.01
+
+# Forward execution
+outputs = engine_pt(x, dt)
+
+print(f"Contraction Bound (L) : {outputs['contraction_bound']:.6f}")
+print(f"Delta Q App            : {outputs['delta_q_app'].shape}")
+print(f"Wasserstein Loss       : {outputs['wasserstein_invariant_loss'].item():.8f}")
+
+2. JAX / Flax Native Module
+import jax
+import jax.numpy as jnp
+from deterministic_Sub_Quantum_OPMC_Engine_v4 import build_deterministic_quantum_neural_module
+
+# Instantiate JAX Module via Master Factory
+engine_jax = build_deterministic_quantum_neural_module(
     backend_name="jax", 
     dim=4, 
     num_modes=8, 
     rank_n=5
 )
 
-Example Forward Pass (PyTorch)
-import torch
+# Initialize PRNG and Parameters
+rng = jax.random.PRNGKey(42)
+x_jax = jax.random.normal(rng, (2, 4))
+dt = 0.01
 
-# Create dummy input tensor (Batch, Dim)
-x_input = torch.randn(32, 4)
-dt_step = torch.tensor(0.01)
+params = engine_jax.init(rng, x_jax, dt)
 
-# Execute deterministic forward pass
-output = pytorch_model(x_input, dt_step)
+# Compiled Execution via JAX JIT
+outputs_jax = engine_jax.apply(params, x_jax, dt)
 
-print(f"Unified Wasserstein Loss: {output['unified_loss'].item()}")
-print(f"Global Contraction Bound: {output['contraction_bound']}")
+print(f"JAX Contraction Constant L : {outputs_jax['contraction_bound']:.6f}")
+print(f"JAX Wasserstein Loss       : {outputs_jax['wasserstein_invariant_loss']}")
 
-Licensing & Open Science Dissemination
-This software is released under the MIT License (2026). It is part of a broader master plan to provide transparent, deterministic, and rigorously proven mathematical frameworks to the global scientific community.
-When utilizing this module in computational fluid dynamics (CFD), high-performance computing (HPC), or biological simulations, please reference the originating Unified Ordinal-Tensor Measurement Theory manuscripts.
+📖 API Documentation
+build_deterministic_quantum_neural_module(backend_name: str, dim: int = 4, num_modes: int = 8, rank_n: int = 5)
+Master factory function returning a differentiable OPMC engine instance for the specified framework backend.
+ * backend_name (str): Either "pytorch" or "jax".
+ * dim (int): Dimension of the state vector.
+ * num_modes (int): Number of interaction modes for CP tensor decomposition.
+ * rank_n (int): Rank of the tensor reduction space.
+Output Dictionary
+Both PyTorch and JAX modules return a dictionary containing:
+ * delta_q_app: Bounded output state increment tensor.
+ * contraction_bound: Scalar Lipschitz constant L \approx 0.316309.
+ * wasserstein_invariant_loss: Scaled distance metric enforcing convergence to the unique invariant measure \mu^*.
+ * vitali_nullification_status: Flag verifying single-epoch support nullification.
+📜 Theoretical References
+ * P.A.I. & Y. A. Limsuwan, "Unified Structural-Ordinal Measure and Geometry Theory: Vitali Set Resolution, Eighth-Order Polyharmonic Operators, and Deterministic Hardware-Decoupled Complexity (Revised Edition with Fully Justified Constants)", Sep 2026.
+ * S. Bernstein, "Sur l'ordre de la meilleure approximation des fonctions EngineMém. Acad. Roy. Belg., 1912.
+ * J. Cheeger, "Differentiability of Lipschitz functions on metric measure spaces", GAFA 9(3), 1999.
+ * C. Villani, "Optimal Transport: Old and New", Springer-Verlag, 2009.
+📄 License
+This project is open-source and licensed under the MIT License.
