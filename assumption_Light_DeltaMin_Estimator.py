@@ -1,3 +1,13 @@
+# =============================================================================
+# Assumption Light DeltaMin Estimator
+# =============================================================================
+# Developer    : PAI , Yoon A Limsuwan / MSPS NETWORK
+# Framework    : Structural Calculus (Deterministic Topological Framework)
+# License      : MIT
+# Year         : 2026
+# =============================================================================
+
+
 import torch
 import torch.nn as nn
 import math
