@@ -684,17 +684,6 @@ pip install torch numpy
 Each module is designed to be self-contained for easy integration into your pipeline. Example initialization:
 from structural_calculus_agent import FullStructuralCalculusAgent
 
-# Initialize the inference engine
-agent = FullStructuralCalculusAgent(
-    input_dim=128, 
-    n_vars=64, 
-    m_clauses=128, 
-    num_classes=1
-)
-
-# Run structural inference
-prediction, viability, transition = agent(raw_data_tensor)
-
 # Denovo Sequence Designer 
 
 **Developer:** PAI, Yoon A Limsuwan / MSPS NETWORK  
