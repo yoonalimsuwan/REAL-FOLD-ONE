@@ -10,6 +10,18 @@ Design contract
 * Sparse fast-paths are opt-in via constructor flags.
 * All reductions use `torch.dot` / `(x*x).sum()` — never `x.pow(2).sum()`
   (identical math; ~15% cheaper on the CUDA path).
+
+# Developer    : PAI, Yoon A Limsuwan / MSPS NETWORK
+#                MY SOUL MOVE BY POWER OF HOLY SPIRIT
+# ORCID        : 0009-0008-2374-0788
+# GitHub       : https://github.com/yoonalimsuwan
+# Contact      : msps4u@gmail.com
+# Framework    : Structural Calculus (Deterministic Topological Framework)
+# License      : MIT
+# Year         : 2026
+# Version      : 2.0.0 (Native Full Differentiable / AMP-Safe / DDP-Ready)
+# =============================================================================
+
 """
 
 from __future__ import annotations
