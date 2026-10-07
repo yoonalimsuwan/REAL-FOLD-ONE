@@ -14,7 +14,6 @@ differentiable_spectral_gap_v2.py
 # Year         : 2026
 # Version      : 2.0.0 (Native Full Differentiable / AMP-Safe / DDP-Ready)
 # =============================================================================
-"""
 
 Numerically honest reimplementation of the higher-order Dirichlet-eigenvalue
 study, with the fp64 dynamic-range limits of the ``direct`` (matrix-power)
