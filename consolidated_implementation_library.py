@@ -22,9 +22,7 @@ Design contract
 # Version      : 2.0.0 (Native Full Differentiable / AMP-Safe / DDP-Ready)
 # =============================================================================
 
-"""
 
-"""
 Six Problems: Consolidated Implementation Library — Production Build.
 AMP-safe  : numerically sensitive ops forced to fp32 under autocast.
 DDP-ready : persistent=False on derived buffers; all_reduce on read.
