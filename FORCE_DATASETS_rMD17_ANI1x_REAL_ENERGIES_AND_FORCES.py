@@ -3,6 +3,8 @@
 =============================================================================
 FORCE DATASETS: rMD17 + ANI-1x  —  REAL ENERGIES AND FORCES
 =============================================================================
+Developer : PAI and Yoon A Limsuwan 
+Organization : MSPS NETWORK / My Soul Move By Power of Holy Spirit 
 License: MIT | 2026
 
 LITERATURE (verifiable):
