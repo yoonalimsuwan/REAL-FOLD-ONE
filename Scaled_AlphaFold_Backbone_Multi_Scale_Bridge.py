@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """
 =============================================================================
-AF-SCALED BACKBONE: Unified Multi-Scale Protein & Organoid Engine
-=============================================================================
-Integrates:
+AF-SCALED BACKBONE: Unified Multi-Scale Protein & Organoid Integrates
+=======================================================================e
+
+Developer : PAI AND Yoon A Limsuwan / MSPS NETWORK 
+Licence : MIT
+Year : 2026
+
+Integratesates:
   1. evoformer_fape_2.py  -> Scaled Evoformer Trunk (AMP + Checkpointing)
   2. af2_losses_2.py      -> Joint FAPE + Distogram + pLDDT + Violation Loss
   3. msa_pipeline.py      -> Real MSA / Neff weighting integration
