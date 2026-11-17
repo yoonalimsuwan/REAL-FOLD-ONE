@@ -1,0 +1,72 @@
+"""
+Kolmogorov resolution monitor — THE DNS CRITERION.
+
+DNS requires Delta <= c_eta * eta. nu_t -> 0 alone is NOT DNS.
+See THEOREMS.md T7 and dns_feasibility().
+"""
+from __future__ import annotations
+import math
+from typing import Any, Dict, Optional
+import torch
+import torch.nn as nn
+from torch import Tensor
+
+
+class ResolutionMonitor(nn.Module):
+    """
+    eps_res = 2 nu <S:S>       resolved dissipation
+    eps_sgs = nu_t |S|^2       subgrid dissipation
+    eps_tot = eps_res + eps_sgs   (or the transported epsilon, if larger)
+    eta     = (nu^3/eps_tot)^(1/4)     Kolmogorov length
+    tau_eta = (nu/eps_tot)^(1/2)       Kolmogorov time
+    resolved = sigmoid((c_eta*eta - Delta)/(w*eta))  -> 1 when Delta <= c_eta*eta
+    """
+
+    def __init__(self, c_eta: float = 2.0, width: float = 0.5):
+        super().__init__()
+        self.c_eta = float(c_eta)
+        self.width = float(width)
+
+    def forward(self, S_mag: Tensor, nu: float, nu_t: Tensor,
+                delta: float, eps_model: Optional[Tensor] = None
+                ) -> Dict[str, Tensor]:
+        # |S|^2 = 2 S:S  =>  2 nu S:S = nu |S|^2
+        eps_res = nu * S_mag ** 2
+        eps_sgs = nu_t * S_mag ** 2
+        eps_tot = (eps_res + eps_sgs).clamp_min(1e-30)
+        if eps_model is not None:
+            eps_tot = torch.maximum(eps_tot, eps_model.clamp_min(1e-30))
+        eta = (nu ** 3 / eps_tot) ** 0.25
+        tau_eta = torch.sqrt(nu / eps_tot)
+        resolved = torch.sigmoid((self.c_eta * eta - delta)
+                                 / (self.width * eta).clamp_min(1e-30))
+        return {
+            "eps_resolved": eps_res, "eps_sgs": eps_sgs, "eps_total": eps_tot,
+            "eta": eta, "tau_eta": tau_eta,
+            "delta_over_eta": delta / eta.clamp_min(1e-30),
+            "resolved": resolved,
+            "resolved_fraction": resolved.mean(),
+            "dt_dns": tau_eta.min(),
+        }
+
+
+def dns_feasibility(Re: float, L: float = 1.0, c_eta: float = 2.0,
+                    budget_cells: float = 1e9) -> Dict[str, Any]:
+    """
+    HONEST feasibility. eta/L ~ Re^(-3/4) for a Kolmogorov cascade,
+    N ~ (L/(c_eta*eta))^3 ~ Re^(9/4). No controller changes this scaling.
+    """
+    if Re <= 0:
+        raise ValueError("Re must be positive")
+    eta_over_L = Re ** (-0.75)
+    n_per_dim = 1.0 / (c_eta * eta_over_L)
+    N = n_per_dim ** 3
+    mem_gb = N * 8 * 8 / 1e9          # 8 fields, float64
+    return {
+        "Re": Re, "eta_over_L": eta_over_L,
+        "cells_required": N, "cells_required_human": f"{N:.3e}",
+        "memory_gb_estimate": mem_gb, "budget_cells": budget_cells,
+        "attainable": N <= budget_cells,
+        "verdict": ("ATTAINABLE within budget" if N <= budget_cells
+                    else "NOT ATTAINABLE — no controller changes Re^(9/4)"),
+    }

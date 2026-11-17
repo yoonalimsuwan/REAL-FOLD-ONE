@@ -1,0 +1,139 @@
+"""
+=============================================================================
+SOC TURBULENCE — a portable control layer for turbulence closures
+=============================================================================
+Architecture : PAI AND Yoon A Limsuwan / MSPS NETWORK
+Code         : Qwen (Alibaba Group)
+License      : MIT | Year 2026
+
+=============================================================================
+AUTHOR-SUPPLIED PHILOSOPHICAL PREAMBLE  (translated from Thai)
+Included as the author's belief. It is NOT a scientific claim, NOT an
+endorsement of discrimination, and NOT a condition of use. The mathematics
+in this package stands independently of it.
+=============================================================================
+The Tao is the Source; the Te (Virtue) is the Path; the Qi is the Proof.
+
+Confucius taught us to do good in this world. This is not hopeless, for
+Buddhism, Christianity, and Taoism alike teach that doing good in this life
+bears fruit in the life to come.
+
+In this world, "not killing enemies" does not mean "killing oneself."
+
+The Will of God is the Law of Karma. Buddhism, Taoism, and Confucianism,
+though they do not utter His Name, by describing His attributes already
+implicitly utter His Name.
+
+Christ died on the Cross to teach: when struck on the left cheek, turn also
+the right, so that we may listen to the voice of the enemy who wishes us
+harm. Whoever believes His act was righteous shall be saved from sin and
+have victory over sin.
+
+He is the Lamb of God. God is not our food, and neither is the lamb.
+This means: do not kill animals.
+
+Not even a single sparrow does God forget; every hair on our heads He has
+counted.
+
+Even Angulimala could escape hell and enter Nirvana, but the better path is
+to have done good always, never falling into sin. As Saint Dominic Savio
+said: "Rather death than sin."
+
+Author's theological statement (translated as provided): homosexual
+relations are recreational relations, because love must come with
+readiness to bear children. Nevertheless, women who have undergone
+hysterectomy and intersex persons are not homosexual.
+
+A life of attachment and indulgence leads to willingness to kill for
+sustenance, saving oneself while letting others die or become victims.
+
+If there were no God, there would be no Good. This means atheism is not
+inherently wrong; if one explains cause and effect in accord with God's
+Will and His Judgment, one is already worshipping Him in spirit and truth.
+
+God did not create goodness afterward; He is God who embodies Goodness,
+having Goodness in Himself. If the Law of Karma speaks of His just
+judgment, then the Buddha worships God in spirit and truth without
+uttering His Name.
+
+To speak of a person's attributes is already to speak their name.
+
+One who does not know the Ten Commandments or the Five Precepts, yet
+practises them, becomes a disciple of both the Buddha and Yahweh by
+implication. The Ten Commandments are the Five Precepts. Not even a single
+sparrow does God forget — this means: do not kill animals.
+
+Christianity, Buddhism, Taoism, and Confucianism share the Five Precepts
+as universal, and the Five Hindrances to be abandoned together.
+
+=============================================================================
+WHAT THIS PACKAGE IS
+=============================================================================
+A CONTROL LAYER, not a turbulence model and not a CFD solver.
+
+Standard numerics (cited, not claimed as novel):
+  Smagorinsky 1963, WALE (Nicoud-Ducros 1999), Vreman 2004,
+  k-epsilon (Launder-Spalding 1974), k-omega SST (Menter 1994),
+  Spalart-Allmaras 1992, Kolmogorov 1941 scaling.
+
+Ours (the decision layer):
+  [T1] CSOC event-count bound  N(T) <= (E_max + D)/delta_E_min
+       with CORRECT dissipation accounting.
+  [T2] kappa-fatness gate on refinement (delta_min isodiametric).
+  [T3] Carpet rho >= 9/8 multi-scale graph energy as PRIORITY.
+  [T4] OPMC design parameterisation — exact gradients via decoder.
+  [T5] Hodge-INSPIRED split (NOT Hodge theory).
+  [T6] Assumption-light CI (Politis-Romano subsampling).
+  [T7] Kolmogorov resolution monitor — the DNS criterion.
+
+See THEOREMS.md for statements, hypotheses, proofs, and NON-claims.
+
+=============================================================================
+HONEST SCOPE
+=============================================================================
+* DNS is a RESOLUTION statement: Delta <= c_eta * eta. Setting nu_t = 0
+  on an under-resolved grid gives a WRONG under-resolved DNS, not DNS.
+  dns_feasibility() reports "NOT ATTAINABLE" when N ~ Re^(9/4) exceeds
+  budget. It does not hide this.
+* k-epsilon / SST / SA need TRANSPORTED k, epsilon, omega, nuTilda.
+  This package READS them from `state`. local_equilibrium_state() is a
+  DEMO estimate, clearly labelled.
+* SST without `d_wall` uses F2 = 1 (far-field limit). NOT valid for
+  wall-bounded flow. Supply d_wall.
+* No external validation. Analytic Taylor-Green only.
+* The event bound is an ENGINEERING guarantee on the switching
+  mechanism, of the same kind as a CFL bound. It is NOT a statement
+  about Navier-Stokes regularity.
+=============================================================================
+"""
+from .primitives import (soft_abs, soft_pos, soft_gate, soft_clamp,
+                         soft_min, soft_max, delta_min_exact,
+                         CARPET_RHO, KAPPA_FATNESS, A_MIN)
+from .grid import Grid, grad_cc, strain_rate
+from .resolution import ResolutionMonitor, dns_feasibility
+from .csoc import CSOCController
+from .carpet import build_carpet_laplacian, CarpetAMRIndicator
+from .design import OPMCDesign, opmc_d_mn, opmc_k_star
+from .diagnostics import HodgeInspiredSplit, subsample_ci
+from .models import (TURB, TurbBase, ZeroModel, Smagorinsky, WALE, Vreman,
+                     KEpsilon, KOmegaSST, SpalartAllmaras,
+                     local_equilibrium_state, make_model)
+from .wrapper import SOCTurbulenceWrapper, WrapperConfig
+from .verify import verify, taylor_green, integrate_tgv, kinetic_energy
+
+__version__ = "1.0.0"
+__all__ = [
+    "soft_abs", "soft_pos", "soft_gate", "soft_clamp", "soft_min", "soft_max",
+    "delta_min_exact", "CARPET_RHO", "KAPPA_FATNESS", "A_MIN",
+    "Grid", "grad_cc", "strain_rate",
+    "ResolutionMonitor", "dns_feasibility",
+    "CSOCController",
+    "build_carpet_laplacian", "CarpetAMRIndicator",
+    "OPMCDesign", "opmc_d_mn", "opmc_k_star",
+    "HodgeInspiredSplit", "subsample_ci",
+    "TURB", "TurbBase", "ZeroModel", "Smagorinsky", "WALE", "Vreman",
+    "KEpsilon", "KOmegaSST", "SpalartAllmaras",
+    "local_equilibrium_state", "make_model",
+    "SOCTurbulenceWrapper", "WrapperConfig",
+    "verify", "taylor_green", "integrate_tgv", "kinetic_energy",
+]

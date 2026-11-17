@@ -1,0 +1,73 @@
+"""CLI: python -m soc_turbulence {verify,demo,feasibility,models}"""
+from __future__ import annotations
+import argparse
+import json
+import math
+import sys
+from .grid import Grid, strain_rate
+from .models import TURB, make_model, local_equilibrium_state
+from .wrapper import SOCTurbulenceWrapper, WrapperConfig
+from .resolution import dns_feasibility
+from .verify import verify, taylor_green, integrate_tgv
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(prog="soc_turbulence")
+    ap.add_argument("cmd", nargs="?", default="verify",
+                    choices=["verify", "demo", "feasibility", "models"])
+    ap.add_argument("--model", default="smagorinsky", choices=sorted(TURB))
+    ap.add_argument("--n", type=int, default=32)
+    ap.add_argument("--nu", type=float, default=0.1)
+    ap.add_argument("--steps", type=int, default=100)
+    ap.add_argument("--dns-mode", default="adaptive",
+                    choices=["off", "adaptive", "force"])
+    ap.add_argument("--re", type=float, default=1e6, help="Re for feasibility")
+    ap.add_argument("--json", default=None)
+    a = ap.parse_args()
+
+    if a.cmd == "verify":
+        return 0 if verify() else 1
+
+    if a.cmd == "models":
+        for k, cls in TURB.items():
+            print(f"{k:<20} needs={cls.needs or '(none)'}")
+        return 0
+
+    if a.cmd == "feasibility":
+        print(json.dumps(dns_feasibility(a.re), indent=2))
+        return 0
+
+    g = Grid(a.n, a.n, a.n)
+    w = SOCTurbulenceWrapper(make_model(a.model), g, a.nu,
+                             WrapperConfig(dns_mode=a.dns_mode))
+    u = taylor_green(g, a.nu)
+    st = local_equilibrium_state(u, strain_rate(u, g)[0], g.delta, a.nu)
+    o = w(st, u)
+    rm = o["resolution"]
+    print(f"model={a.model} grid={a.n}^3 nu={a.nu} Delta={g.delta:.5f}")
+    print(f"eta={float(rm['eta'].mean()):.5f} "
+          f"Delta/eta={float(rm['delta_over_eta'].mean()):.3f}")
+    print(f"resolved={float(rm['resolved_fraction']):.4f} regime={o['regime']}")
+    print(f"nu_t_base_max={float(o['nu_t_base'].max()):.4e} "
+          f"nu_t_final_max={float(o['nu_t'].max()):.4e}")
+    print(f"events={int(o['csoc']['event_count'])} "
+          f"bound={float(o['csoc']['n_bound']):.2f} "
+          f"ok={bool(o['csoc']['bound_satisfied'])}")
+    print(f"refine_suggested={int(o['amr']['n_refine_suggested'])} "
+          f"rho={float(o['amr']['rho']):.5f}")
+    if "sst_warning" in o:
+        print(f"WARNING: {o['sst_warning']}")
+    r = integrate_tgv(g, a.nu, a.steps, 0.002, w)
+    T = a.steps * 0.002
+    print(f"KE {r['ke'][0]:.6f} -> {r['ke'][-1]:.6f} "
+          f"(analytic x{math.exp(-4*a.nu*T):.6f})")
+    if a.json:
+        with open(a.json, "w") as fh:
+            json.dump({"resolved": float(rm["resolved_fraction"]),
+                       "regime": o["regime"], "ke": r["ke"],
+                       "ci": w.diagnostics_ci()}, fh, indent=2, default=float)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
